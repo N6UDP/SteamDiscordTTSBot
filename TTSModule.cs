@@ -47,6 +47,10 @@ namespace DiscordBotTTS
             if (channel == null) { await Context.Channel.SendMessageAsync("User must be in a voice channel, or a voice channel must be passed as an argument."); return; }
 
             // For the next step with transmitting audio, you would want to pass this Audio Client in to a service.
+            if (map.ContainsKey(channel.Id))
+            {
+                await LeaveChannel(channel);
+            }
             var audioClient = await channel.ConnectAsync();
             await Context.Channel.SendMessageAsync($"Connected to {channel.Name} ({channel.Id})!");
             map[channel.Id] = (audioClient, channel, audioClient.CreatePCMStream(AudioApplication.Mixed), new SemaphoreSlim(1,1));
@@ -126,12 +130,14 @@ namespace DiscordBotTTS
             // Get the audio channel
             channel = channel ?? (Context.User as IGuildUser)?.VoiceChannel;
             if (channel == null) { await Context.Channel.SendMessageAsync("User must be in a voice channel, or a voice channel must be passed as an argument."); return; }
-
-            (var audioClient, var channelvar, var audiostream, var sem) = map[channel.Id];
-            await audiostream.DisposeAsync();
-            await audioClient.StopAsync();
-            audioClient.Dispose();
-            await channelvar.DisconnectAsync();
+            if (map.ContainsKey(channel.Id))
+            {
+                (var audioClient, var channelvar, var audiostream, var sem) = map[channel.Id];
+                await audiostream.DisposeAsync();
+                await audioClient.StopAsync();
+                audioClient.Dispose();
+                await channelvar.DisconnectAsync();
+            }
         }
 
         static ConcurrentDictionary<ulong, UserPrefs> userPrefsDict = new ConcurrentDictionary<ulong, UserPrefs>();
