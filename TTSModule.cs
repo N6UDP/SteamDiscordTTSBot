@@ -297,8 +297,8 @@ namespace DiscordBotTTS
                     voice = possiblevoice;
                     msg = string.Join(":", new ArraySegment<string>(array, 1, array.Length - 1));
                 }
-                await IdtoChannel[userPrefs.TextChannelId].SendMessageAsync($"{userPrefs.Name}: {message.Msg}");
-                await SendAsync(userPrefs.VoiceChannelId, message.Msg , voice, userPrefs.Name, userPrefs.Rate);
+                await IdtoChannel[userPrefs.TextChannelId].SendMessageAsync($"{userPrefs.Name}: {msg}");
+                await SendAsync(userPrefs.VoiceChannelId, msg, voice, userPrefs.Name, userPrefs.Rate);
             }
             
         }
