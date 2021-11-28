@@ -114,8 +114,10 @@ namespace DiscordBotTTS
                 await _ms.CopyToAsync(audiostream);
                 await audiostream.FlushAsync();
             }
-            catch {
+            catch (Exception e)
+            {
                 await Context.Channel.SendMessageAsync($"{user}:{channel.Name}:{voice}:{msg} FAILED TO SEND");
+                Console.WriteLine(e.ToString());
             }
             finally
             {
