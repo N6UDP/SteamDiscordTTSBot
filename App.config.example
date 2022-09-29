@@ -4,5 +4,10 @@
         <add key="BotToken" value="DISCORDBOTTOKENHERE" />
         <add key="SteamUser" value="user" />
         <add key="SteamPass" value="pass" />
+        <!-- This allows old style !tts commands etc -->
+        <add key="EnableMessageContent" value="false" />
+        <!-- Optional experimental coqui tts support -->
+        <add key="ffmpeg" value="C:\tts\Scripts\ffmpeg.exe" />
+        <add key="coquitts" value="C:\tts\Scripts\tts.exe" />
     </appSettings>
 </configuration>

@@ -1,4 +1,4 @@
-# Hacky Steam Chat -> Discord TTS Bot
+# Hacky Steam Chat -> Discord Voice channel TTS Bot
 This works if you are me or have a fair bit of know-how.
 
 ## Dependencies
@@ -10,4 +10,3 @@ For running it you need to rename `App.config.example` to `App.config` and edit 
 
 ## Todos
 * Add unlink (not strictly needed as we let you adjust your link even today)
-* Deal properly with multiple guilds (discord servers) and remove / rework UserPrefs text/voice channel id storage (perhaps avoid !tts link in cases where you haven't switched servers just channels)

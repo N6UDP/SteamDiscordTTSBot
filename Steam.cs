@@ -5,6 +5,7 @@ using System.Configuration;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Discord;
 using SteamKit2;
 
 namespace DiscordBotTTS
@@ -33,6 +34,11 @@ namespace DiscordBotTTS
         static string user, pass;
 
         public static ConcurrentQueue<Message> Queue = new ConcurrentQueue<Message>();
+
+        private static void Log(string msg, string level = "Info")
+        {
+            Console.WriteLine($"{DateTime.Now.ToString("s")}:Steam:{level}: {msg}");
+        }
 
         public static Task RunSteamTask()
         {
@@ -73,7 +79,7 @@ namespace DiscordBotTTS
 
                     isRunning = true;
 
-                    Console.WriteLine("Connecting to Steam...");
+                    Log("Connecting to Steam...");
 
                     // initiate the connection
                     steamClient.Connect();
@@ -88,7 +94,7 @@ namespace DiscordBotTTS
                     errorCount++;
 
                     // Sleep for 60 seconds * errorCount
-                    Console.WriteLine("Sleeping for {0} minutes", errorCount);
+                    Log(String.Format("Sleeping for {0} minutes", errorCount));
                     Thread.Sleep((1000 * 60 * errorCount));
                 }
             });
@@ -96,7 +102,7 @@ namespace DiscordBotTTS
 
         static void OnConnected(SteamClient.ConnectedCallback callback)
         {
-            Console.WriteLine("Connected to Steam! Logging in '{0}'...", user);
+            Log(String.Format("Connected to Steam! Logging in '{0}'...", user));
 
             steamUser.LogOn(new SteamUser.LogOnDetails
             {
@@ -107,7 +113,7 @@ namespace DiscordBotTTS
 
         static void OnDisconnected(SteamClient.DisconnectedCallback callback)
         {
-            Console.WriteLine("Disconnected from Steam");
+            Log("Disconnected from Steam");
 
             isRunning = false;
         }
@@ -122,20 +128,20 @@ namespace DiscordBotTTS
                     // then the account we're logging into is SteamGuard protected
                     // see sample 5 for how SteamGuard can be handled
 
-                    Console.WriteLine("Unable to logon to Steam: This account is SteamGuard protected.");
+                    Log("Unable to logon to Steam: This account is SteamGuard protected.");
 
                     isRunning = false;
                     return;
                 }
 
-                Console.WriteLine("Unable to logon to Steam: {0} / {1}", callback.Result, callback.ExtendedResult);
+                Log(String.Format("Unable to logon to Steam: {0} / {1}", callback.Result, callback.ExtendedResult));
 
                 isRunning = false;
                 return;
             }
 
             errorCount = 0;
-            Console.WriteLine("Successfully logged on!");
+            Log("Successfully logged on!");
 
             // at this point, we'd be able to perform actions on Steam
 
@@ -157,7 +163,7 @@ namespace DiscordBotTTS
 
             int friendCount = steamFriends.GetFriendCount();
 
-            Console.WriteLine("We have {0} friends", friendCount);
+            Log(String.Format("We have {0} friends", friendCount));
 
             for (int x = 0; x < friendCount; x++)
             {
@@ -165,7 +171,7 @@ namespace DiscordBotTTS
                 SteamID steamIdFriend = steamFriends.GetFriendByIndex(x);
 
                 // we'll just display the STEAM_ rendered version
-                Console.WriteLine("Friend: {0}", steamIdFriend.Render());
+                Log(String.Format("Friend: {0}", steamIdFriend.Render()));
             }
 
             // we can also iterate over our friendslist to accept or decline any pending invites
@@ -183,7 +189,7 @@ namespace DiscordBotTTS
         static void OnFriendAdded(SteamFriends.FriendAddedCallback callback)
         {
             // someone accepted our friend request, or we accepted one
-            Console.WriteLine("{0} is now a friend", callback.PersonaName);
+            Log(String.Format("{0} is now a friend", callback.PersonaName));
         }
 
         static void OnPersonaState(SteamFriends.PersonaStateCallback callback)
@@ -191,12 +197,12 @@ namespace DiscordBotTTS
             // this callback is received when the persona state (friend information) of a friend changes
 
             // for this sample we'll simply display the names of the friends
-            Console.WriteLine("State change: {0}", callback.Name);
+            Log(String.Format("State change: {0}", callback.Name));
         }
 
         static void OnLoggedOff(SteamUser.LoggedOffCallback callback)
         {
-            Console.WriteLine("Logged off of Steam: {0}", callback.Result);
+            Log(String.Format("Logged off of Steam: {0}", callback.Result));
         }
 
         static void OnFriendMsg(SteamFriends.FriendMsgCallback callback)
@@ -205,7 +211,7 @@ namespace DiscordBotTTS
             {
                 var msg = new Message() { Msg = callback.Message, Time = DateTime.UtcNow, UserId = callback.Sender, UserName = steamFriends.GetFriendPersonaName(callback.Sender) };
                 Queue.Enqueue(msg);
-                Console.WriteLine("{0}:{1}:{2}", msg.Time.ToString("s"), msg.UserName, msg.Msg);
+                Log(String.Format("{0}:{1}:{2}", msg.Time.ToString("s"), msg.UserName, msg.Msg));
             }
         }
     }
