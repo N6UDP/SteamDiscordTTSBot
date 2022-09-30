@@ -54,7 +54,7 @@ namespace DiscordBotTTS
             // Get the audio channel
             channel = channel ?? (Context.User as IGuildUser)?.VoiceChannel;
             textChannel = textChannel ?? Context.Channel;
-            guildId = guildId != 0 ? guildId : guildId;
+            guildId = guildId != 0 ? guildId : Context.Guild.Id;
 
             if (channel == null) { await textChannel.SendMessageAsync("User must be in a voice channel, or a voice channel must be passed as an argument."); return; }
 
