@@ -238,10 +238,13 @@ namespace DiscordBotTTS
                 {
                     Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Streaming TTS audio to voice channel: {cleanmsg}");
                     
-                    // Stream the PCM audio data directly to the voice channel
-                    // NetCord expects PCM data to be written to the output stream
-                    await _ms.CopyToAsync(outputStream);
-                    await outputStream.FlushAsync();
+                    // Create an Opus encoding stream to convert PCM to Opus format
+                    // NetCord expects Opus-encoded frames, not raw PCM
+                    using (var opusStream = new OpusEncodeStream(outputStream, PcmFormat.Short, VoiceChannels.Stereo, OpusApplication.Audio))
+                    {
+                        await _ms.CopyToAsync(opusStream);
+                        await opusStream.FlushAsync();
+                    }
                     
                     Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - TTS audio streaming completed successfully");
                     
