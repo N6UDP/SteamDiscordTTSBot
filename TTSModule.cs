@@ -1,5 +1,6 @@
 ﻿using NetCord;
 using NetCord.Gateway;
+using NetCord.Gateway.Voice;
 using NetCord.Rest;
 using System;
 using System.Threading.Tasks;
@@ -22,7 +23,7 @@ namespace DiscordBotTTS
 {
     public class TTSModule
     {
-        static ConcurrentDictionary<ulong, ValueTuple<object, object, object, SemaphoreSlim>> map = new ConcurrentDictionary<ulong, (object, object, object, SemaphoreSlim)>();
+        static ConcurrentDictionary<ulong, ValueTuple<VoiceClient, VoiceGuildChannel, Stream, SemaphoreSlim>> map = new ConcurrentDictionary<ulong, (VoiceClient, VoiceGuildChannel, Stream, SemaphoreSlim)>();
 
         static Task dq;
 
@@ -41,31 +42,75 @@ namespace DiscordBotTTS
         }
 
         // The command's Run Mode MUST be set to RunMode.Async, otherwise, being connected to a voice channel will block the gateway thread.
-        public async Task JoinChannel(object channel = null, TextChannel textChannel = null, ulong guildId = 0)
+        public async Task JoinChannel(object channel = null, TextChannel textChannel = null, ulong guildId = 0, GatewayClient gatewayClient = null)
         {
-            // Get the audio channel - this needs to be adapted for NetCord voice channels
-            // channel = channel ?? /* get voice channel from user */;
-            // textChannel = textChannel ?? /* current channel */;
-
+            // Validate inputs
             if (channel == null && textChannel != null)
             {
                 await textChannel.SendMessageAsync(new MessageProperties { Content = "User must be in a voice channel, or a voice channel must be passed as an argument." });
                 return;
             }
 
+            if (gatewayClient == null)
+            {
+                if (textChannel != null)
+                    await textChannel.SendMessageAsync(new MessageProperties { Content = "Gateway client is required for voice connection." });
+                return;
+            }
+
+            // Cast to proper voice channel type
+            if (channel is not VoiceGuildChannel voiceChannel)
+            {
+                if (textChannel != null)
+                    await textChannel.SendMessageAsync(new MessageProperties { Content = "Invalid voice channel provided." });
+                return;
+            }
+
             // For the next step with transmitting audio, you would want to pass this Audio Client in to a service.
             if (map.ContainsKey(guildId))
             {
-                await LeaveChannel(channel);
+                await LeaveChannel(channel, textChannel, guildId);
             }
 
-            // TODO: Implement NetCord voice connection
-            // var audioClient = await channel.ConnectAsync();
-            if (textChannel != null)
+            try
             {
-                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Connected to voice channel for Guild {guildId}!" });
+                // Create NetCord voice connection
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Attempting to join voice channel: {voiceChannel.Name} (ID: {voiceChannel.Id})");
+                
+                var voiceClient = await gatewayClient.JoinVoiceChannelAsync(guildId, voiceChannel.Id);
+                
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Voice client created, starting connection...");
+                
+                // Connect to voice
+                await voiceClient.StartAsync();
+                
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Voice client connected, entering speaking state...");
+                
+                // Enter speaking state to be able to send voice
+                await voiceClient.EnterSpeakingStateAsync(new SpeakingProperties(SpeakingFlags.Microphone));
+                
+                // Create output stream for sending voice
+                var outputStream = voiceClient.CreateOutputStream();
+                
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Voice connection established successfully");
+                
+                if (textChannel != null)
+                {
+                    await textChannel.SendMessageAsync(new MessageProperties { Content = $"Connected to voice channel: {voiceChannel.Name}" });
+                }
+                
+                // Store the voice connection
+                map[guildId] = (voiceClient, voiceChannel, outputStream, new SemaphoreSlim(1, 1));
             }
-            map[guildId] = (null, channel, null, new SemaphoreSlim(1, 1));
+            catch (Exception ex)
+            {
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error connecting to voice channel: {ex.Message}");
+                if (textChannel != null)
+                {
+                    await textChannel.SendMessageAsync(new MessageProperties { Content = $"Failed to connect to voice channel: {ex.Message}" });
+                }
+                return;
+            }
 
             if (dq == null)
             {
@@ -134,7 +179,7 @@ namespace DiscordBotTTS
             if (!map.TryGetValue(guildId, out var mapData))
                 return;
 
-            (var audioClient, var channel, var audiostream, var sem) = mapData;
+            (var voiceClient, var voiceChannel, var outputStream, var sem) = mapData;
 
             // Shamelessly lifted from https://stackoverflow.com/a/37960256
             var cleanmsg = Regex.Replace(msg, @"(ftp:\/\/|www\.|https?:\/\/){1}[a-zA-Z0-9u00a1-\uffff0-]{2,}\.[a-zA-Z0-9u00a1-\uffff0-]{2,}(\S*)", "URL replaced");
@@ -147,7 +192,7 @@ namespace DiscordBotTTS
             if (!IdtoChannel.TryGetValue(guildId, out var textChannel))
                 return;
 
-            var textMsg = await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:voice_channel:{voice}:{msg}" });
+            var textMsg = await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:{voiceChannel?.Name ?? "voice_channel"}:{voice}:{msg}" });
 
             using (var _ms = new MemoryStream())
             {
@@ -191,23 +236,27 @@ namespace DiscordBotTTS
                 sem.Wait();
                 try
                 {
-                    // TODO: Implement audio streaming with NetCord voice
-                    // await _ms.CopyToAsync(audiostream, new CancellationTokenSource(40000).Token);
-                    // await audiostream.FlushAsync(new CancellationTokenSource(40000).Token);
+                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Streaming TTS audio to voice channel: {cleanmsg}");
                     
-                    // For now, just indicate success without audio streaming
-                    // TODO: Add proper emoji reaction with NetCord
-                    Log($"TTS generated for: {user}:voice_channel:{voice}:{msg}", "Info");
+                    // Stream the PCM audio data directly to the voice channel
+                    // NetCord expects PCM data to be written to the output stream
+                    await _ms.CopyToAsync(outputStream);
+                    await outputStream.FlushAsync();
+                    
+                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - TTS audio streaming completed successfully");
+                    
+                    Log($"TTS sent to voice channel: {user}:{voiceChannel?.Name}:{voice}:{msg}", "Info");
                 }
                 catch (Exception e)
                 {
-                    await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:voice_channel:{voice}:{msg} FAILED TO SEND" });
-                    Log($"{user}:voice_channel:{voice}:{msg} FAILED TO SEND", "Error");
+                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error streaming TTS audio: {e.Message}");
+                    await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:{voiceChannel?.Name}:{voice}:{msg} FAILED TO SEND" });
+                    Log($"{user}:{voiceChannel?.Name}:{voice}:{msg} FAILED TO SEND", "Error");
                     Log(e.ToString(), "Error");
                     try
                     {
                         await textChannel.SendMessageAsync(new MessageProperties { Content = "Leaving voice channel due to failure." });
-                        await LeaveChannel(channel, textChannel, guildId);
+                        await LeaveChannel(voiceChannel, textChannel, guildId);
                     }
                     catch
                     {
@@ -223,20 +272,39 @@ namespace DiscordBotTTS
 
         public async Task LeaveChannel(object channel = null, TextChannel textChannel = null, ulong guildId = 0)
         {
-            // TODO: Implement proper voice channel disconnection with NetCord
             if (map.ContainsKey(guildId))
             {
-                (var audioClient, var channelvar, var audiostream, var sem) = map[guildId];
+                (var voiceClient, var voiceChannel, var outputStream, var sem) = map[guildId];
                 try
                 {
-                    // TODO: Properly dispose NetCord voice objects
-                    // await audiostream.DisposeAsync();
-                    // await audioClient.StopAsync();
-                    // audioClient.Dispose();
-                    // await channelvar.DisconnectAsync();
+                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Disconnecting from voice channel: {voiceChannel?.Name}");
+                    
+                    // Dispose the output stream first
+                    if (outputStream != null)
+                    {
+                        await outputStream.FlushAsync();
+                        outputStream.Dispose();
+                    }
+                    
+                    // Dispose the voice client (it will automatically stop)
+                    if (voiceClient != null)
+                    {
+                        voiceClient.Dispose();
+                    }
+                    
+                    // Dispose the semaphore
+                    sem?.Dispose();
+                    
+                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Successfully disconnected from voice channel");
+                    
+                    if (textChannel != null)
+                    {
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"Left voice channel: {voiceChannel?.Name ?? "Unknown"}" });
+                    }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error leaving voice channel: {ex.Message}");
                     if (textChannel != null)
                     {
                         await textChannel.SendMessageAsync(new MessageProperties { Content = "Issues leaving voice channel." });
