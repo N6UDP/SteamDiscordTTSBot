@@ -28,6 +28,8 @@ namespace DiscordBotTTS
         static Task dq;
 
         static Task saver;
+        
+        private RestClient _restClient;
 
         public async Task UserInfoAsync(User user = null, TextChannel channel = null)
         {
@@ -39,6 +41,11 @@ namespace DiscordBotTTS
         private static void Log(string msg, string level = "Info")
         {
             Console.WriteLine($"{DateTime.Now.ToString("s")}:TTS:{level}: {msg}");
+        }
+
+        public void SetRestClient(RestClient restClient)
+        {
+            _restClient = restClient;
         }
 
         // The command's Run Mode MUST be set to RunMode.Async, otherwise, being connected to a voice channel will block the gateway thread.
@@ -174,7 +181,7 @@ namespace DiscordBotTTS
                 RedirectStandardOutput = true,
             });
         }
-        private async Task SendAsync(ulong guildId, string msg, string voice = "Microsoft David Desktop", string user = "", int rate = 0)
+        private async Task SendAsync(ulong guildId, string msg, string voice = "Microsoft David Desktop", string user = "", int rate = 0, RestClient restClient = null)
         {
             if (!map.TryGetValue(guildId, out var mapData))
                 return;
@@ -247,6 +254,20 @@ namespace DiscordBotTTS
                     }
                     
                     Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - TTS audio streaming completed successfully");
+                    
+                    // Add checkmark reaction to indicate successful TTS completion
+                    if (restClient != null)
+                    {
+                        try
+                        {
+                            await restClient.AddMessageReactionAsync(textMsg.ChannelId, textMsg.Id, "✅");
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Added checkmark reaction to TTS message");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Failed to add reaction: {ex.Message}");
+                        }
+                    }
                     
                     Log($"TTS sent to voice channel: {user}:{voiceChannel?.Name}:{voice}:{msg}", "Info");
                 }
@@ -534,7 +555,7 @@ namespace DiscordBotTTS
                     voice = possiblevoice;
                     msg = string.Join(":", (IEnumerable<string>)new ArraySegment<string>(array, 1, array.Length - 1));
                 }
-                await SendAsync(userPrefs.GuildId, msg, voice, userPrefs.Name, userPrefs.Rate);
+                await SendAsync(userPrefs.GuildId, msg, voice, userPrefs.Name, userPrefs.Rate, _restClient);
             }
         }
 

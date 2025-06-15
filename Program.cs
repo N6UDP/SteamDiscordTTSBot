@@ -51,6 +51,9 @@ namespace DiscordBotTTS
 
                 var token = new BotToken(botToken);
                 _restClient = new RestClient(token);
+                
+                // Set the RestClient for the slash command TTS module
+                slashtts.SetRestClient(_restClient);
                 _client = new GatewayClient(token, new GatewayClientConfiguration { Intents = intents });
                 
                 _client.Ready += Client_Ready;

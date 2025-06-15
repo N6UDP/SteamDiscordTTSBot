@@ -20,6 +20,7 @@ namespace DiscordBotTTS
             _restClient = restClient;
             _client = client;
             _ttsModule = new TTSModule();
+            _ttsModule.SetRestClient(restClient);
         }
 
         public async Task InstallCommandsAsync()
