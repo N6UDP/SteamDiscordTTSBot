@@ -1,6 +1,6 @@
-﻿using Discord;
-using Discord.Commands;
-using Discord.WebSocket;
+﻿using NetCord;
+using NetCord.Gateway;
+using NetCord.Rest;
 using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
@@ -16,9 +16,8 @@ namespace DiscordBotTTS
 {
     public class Program
     {
-        private DiscordSocketClient _client;
-
-        private CommandService _cs;
+        private GatewayClient _client;
+        private RestClient _restClient;
 
         public static void Main(string[] args)
             => new Program().MainAsync().GetAwaiter().GetResult();
@@ -29,31 +28,36 @@ namespace DiscordBotTTS
 
             _ = bool.TryParse(ConfigurationManager.AppSettings.Get("EnableMessageContent"), out bool useMessageContent);
 
-            var intents = useMessageContent ? GatewayIntents.AllUnprivileged | GatewayIntents.MessageContent : GatewayIntents.AllUnprivileged;
+            var intents = useMessageContent ? GatewayIntents.AllNonPrivileged | GatewayIntents.MessageContent : GatewayIntents.AllNonPrivileged;
 
-            var config = new DiscordSocketConfig
-            {
-                GatewayIntents = intents
-            };
-            // TODO: make one of these or similar without breaking stuff
-            //slashtts = new TTSModule();
+            var botToken = ConfigurationManager.AppSettings.Get("BotToken");
+            
+            // Initialize the TTS module
+            slashtts = new TTSModule();
 
-            _client = new DiscordSocketClient(config);
-            _client.Log += Log;
+            var token = new BotToken(botToken);
+            _restClient = new RestClient(token);
+            _client = new GatewayClient(token, new GatewayClientConfiguration { Intents = intents });
             _client.Ready += Client_Ready;
-            _client.SlashCommandExecuted += SlashCommandHandler;
-            await _client.LoginAsync(TokenType.Bot, ConfigurationManager.AppSettings.Get("BotToken"));
-            await _client.StartAsync();
-            _cs = new CommandService();
-            _cs.Log += Log;
-            var _ch = new CommandHandler(_client, _cs);
+            
+            _client.InteractionCreate += async interaction =>
+            {
+                if (interaction is SlashCommandInteraction slashCommand)
+                {
+                    await SlashCommandHandler(slashCommand);
+                }
+            };
+
+            var _ch = new CommandHandler(_client, _restClient);
             await _ch.InstallCommandsAsync();
+
+            await _client.StartAsync();
 
             // Block this task until the program is closed.
             await Task.Delay(-1);
         }
 
-        public async Task Client_Ready()
+        public async ValueTask Client_Ready(ReadyEventArgs eventArgs)
         {
             Dictionary<string, string> commands = new Dictionary<string, string>()
             {
@@ -65,21 +69,30 @@ namespace DiscordBotTTS
                 {"changerate", "<-10 .. 10> where 10 is fastest" },
                 {"changeserver", "Changes server" }
             };
+            
             List<SlashCommandProperties> builtCommands = new List<SlashCommandProperties>();
             foreach ((var command, var desc) in commands)
             {
-                var builder = new SlashCommandBuilder();
-                builder.WithName(command).WithDescription(desc).AddOption("args", ApplicationCommandOptionType.String, "Arguments");
-                builtCommands.Add(builder.Build());
+                var commandData = new SlashCommandProperties(command, desc)
+                {
+                    Options = new List<ApplicationCommandOptionProperties>
+                    {
+                        new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "args", "Arguments")
+                        {
+                            Required = false
+                        }
+                    }
+                };
+                builtCommands.Add(commandData);
             }
             // TODO: This could be parallel...
 
             /*
-            foreach (var guild in _client.Guilds)
+            foreach (var guild in _client.Cache.Guilds.Values)
             {
                 foreach (var prop in builtCommands)
                 {
-                    await guild.CreateApplicationCommandAsync(prop);
+                    await _restClient.CreateGuildApplicationCommandAsync(guild.Id, prop);
                 }
             }
             */
@@ -87,26 +100,25 @@ namespace DiscordBotTTS
 
         private TTSModule slashtts;
 
-        private async Task SlashCommandHandler(SocketSlashCommand command)
+        private async Task SlashCommandHandler(SlashCommandInteraction command)
         {
-            switch (command.CommandName)
+            switch (command.Data.Name)
             {
                 case "join":
-                    await command.RespondAsync("Done");
-                    await slashtts.JoinChannel((command.User as IGuildUser)?.VoiceChannel, command.Channel, command.GuildId.Value);
+                    await command.SendResponseAsync(InteractionCallback.Message("Done"));
+                    // For now, we'll pass null for the voice channel - will need to implement voice state tracking
+                    if (command.Channel is TextChannel textChannel)
+                    {
+                        await slashtts.JoinChannel(null, textChannel, command.GuildId.Value);
+                    }
                     break;
                 default:
-                    await command.RespondAsync($"You executed {command.Data.Name} with {command.Data.Options.FirstOrDefault().Value} which isn't yet implemented.");
+                    var optionValue = command.Data.Options?.FirstOrDefault()?.Value?.ToString() ?? "no args";
+                    await command.SendResponseAsync(InteractionCallback.Message($"You executed {command.Data.Name} with {optionValue} which isn't yet implemented."));
                     break;
             }
-            
         }
 
-        private Task Log(LogMessage msg)
-        {
-            Console.WriteLine($"{DateTime.Now.ToString("s")}:{msg.Source}:{msg.Severity}: {msg.ToString()}{(msg.Exception != null ? msg.Exception : string.Empty)}");
-            return Task.CompletedTask;
-        }
 
     }
 

@@ -1,17 +1,14 @@
-﻿using Discord.Commands;
+﻿using NetCord.Rest;
+using NetCord;
 using System.Threading.Tasks;
 
 namespace DiscordBotTTS
 {
-    public class InfoModule : ModuleBase<SocketCommandContext>
+    public class InfoModule
     {
-        // ~say hello world -> hello world
-        [Command("say")]
-        [Summary("Echoes a message.")]
-        public Task SayAsync([Remainder] [Summary("The text to echo")] string echo)
-            => ReplyAsync(echo);
-
-        // ReplyAsync is a method on ModuleBase 
+        public async Task SayAsync(string echo, TextChannel channel)
+        {
+            await channel.SendMessageAsync(new MessageProperties { Content = echo });
+        }
     }
-
 }

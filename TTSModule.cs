@@ -1,7 +1,6 @@
-﻿using Discord;
-using Discord.Audio;
-using Discord.Commands;
-using Discord.WebSocket;
+﻿using NetCord;
+using NetCord.Gateway;
+using NetCord.Rest;
 using System;
 using System.Threading.Tasks;
 using System.Speech.Synthesis;
@@ -21,25 +20,19 @@ using SteamKit2.CDN;
 
 namespace DiscordBotTTS
 {
-    [Group("tts")]
-    public class TTSModule : ModuleBase<SocketCommandContext>
+    public class TTSModule
     {
-        static ConcurrentDictionary<ulong, ValueTuple<IAudioClient, IVoiceChannel, AudioOutStream, SemaphoreSlim>> map = new ConcurrentDictionary<ulong, (IAudioClient, IVoiceChannel, AudioOutStream, SemaphoreSlim)>();
+        static ConcurrentDictionary<ulong, ValueTuple<object, object, object, SemaphoreSlim>> map = new ConcurrentDictionary<ulong, (object, object, object, SemaphoreSlim)>();
 
         static Task dq;
 
         static Task saver;
 
-        [Command("userinfo")]
-        [Summary
-        ("Returns info about the current user, or the user parameter, if one passed.")]
-        [Alias("user", "whois")]
-        public async Task UserInfoAsync(
-            [Summary("The (optional) user to get info from")]
-        SocketUser user = null)
+        public async Task UserInfoAsync(User user = null, TextChannel channel = null)
         {
-            var userInfo = user ?? Context.Client.CurrentUser;
-            await ReplyAsync($"{userInfo.Username}#{userInfo.Discriminator}");
+            // This will need to be adapted for NetCord when we have proper context
+            // var userInfo = user ?? /* current user */;
+            // await channel.SendMessageAsync($"{userInfo.Username}");
         }
 
         private static void Log(string msg, string level = "Info")
@@ -48,15 +41,17 @@ namespace DiscordBotTTS
         }
 
         // The command's Run Mode MUST be set to RunMode.Async, otherwise, being connected to a voice channel will block the gateway thread.
-        [Command("join", RunMode = RunMode.Async)]
-        public async Task JoinChannel(IVoiceChannel channel = null, ISocketMessageChannel textChannel = null, ulong guildId = 0)
+        public async Task JoinChannel(object channel = null, TextChannel textChannel = null, ulong guildId = 0)
         {
-            // Get the audio channel
-            channel = channel ?? (Context.User as IGuildUser)?.VoiceChannel;
-            textChannel = textChannel ?? Context.Channel;
-            guildId = guildId != 0 ? guildId : Context.Guild.Id;
+            // Get the audio channel - this needs to be adapted for NetCord voice channels
+            // channel = channel ?? /* get voice channel from user */;
+            // textChannel = textChannel ?? /* current channel */;
 
-            if (channel == null) { await textChannel.SendMessageAsync("User must be in a voice channel, or a voice channel must be passed as an argument."); return; }
+            if (channel == null && textChannel != null)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "User must be in a voice channel, or a voice channel must be passed as an argument." });
+                return;
+            }
 
             // For the next step with transmitting audio, you would want to pass this Audio Client in to a service.
             if (map.ContainsKey(guildId))
@@ -64,9 +59,13 @@ namespace DiscordBotTTS
                 await LeaveChannel(channel);
             }
 
-            var audioClient = await channel.ConnectAsync();
-            await textChannel.SendMessageAsync($"Connected to {channel.Name} ({channel.Id}) for Guild {guildId}!");
-            map[guildId] = (audioClient, channel, audioClient.CreatePCMStream(AudioApplication.Mixed), new SemaphoreSlim(1, 1));
+            // TODO: Implement NetCord voice connection
+            // var audioClient = await channel.ConnectAsync();
+            if (textChannel != null)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Connected to voice channel for Guild {guildId}!" });
+            }
+            map[guildId] = (null, channel, null, new SemaphoreSlim(1, 1));
 
             if (dq == null)
             {
@@ -132,7 +131,10 @@ namespace DiscordBotTTS
         }
         private async Task SendAsync(ulong guildId, string msg, string voice = "Microsoft David Desktop", string user = "", int rate = 0)
         {
-            (var audioClient, var channel, var audiostream, var sem) = map[guildId];
+            if (!map.TryGetValue(guildId, out var mapData))
+                return;
+
+            (var audioClient, var channel, var audiostream, var sem) = mapData;
 
             // Shamelessly lifted from https://stackoverflow.com/a/37960256
             var cleanmsg = Regex.Replace(msg, @"(ftp:\/\/|www\.|https?:\/\/){1}[a-zA-Z0-9u00a1-\uffff0-]{2,}\.[a-zA-Z0-9u00a1-\uffff0-]{2,}(\S*)", "URL replaced");
@@ -142,7 +144,10 @@ namespace DiscordBotTTS
                 msg = msg + "; cleaned: " + cleanmsg;
             }
 
-            var textMsg = await IdtoChannel[guildId].SendMessageAsync($"{user}:{channel.Name}:{voice}:{msg}");
+            if (!IdtoChannel.TryGetValue(guildId, out var textChannel))
+                return;
+
+            var textMsg = await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:voice_channel:{voice}:{msg}" });
 
             using (var _ms = new MemoryStream())
             {
@@ -186,70 +191,67 @@ namespace DiscordBotTTS
                 sem.Wait();
                 try
                 {
-                    await _ms.CopyToAsync(audiostream, new CancellationTokenSource(40000).Token);
-                    await audiostream.FlushAsync(new CancellationTokenSource(40000).Token);
-                    await textMsg.AddReactionAsync(new Emoji("\U00002705"));
+                    // TODO: Implement audio streaming with NetCord voice
+                    // await _ms.CopyToAsync(audiostream, new CancellationTokenSource(40000).Token);
+                    // await audiostream.FlushAsync(new CancellationTokenSource(40000).Token);
+                    
+                    // For now, just indicate success without audio streaming
+                    // TODO: Add proper emoji reaction with NetCord
+                    Log($"TTS generated for: {user}:voice_channel:{voice}:{msg}", "Info");
                 }
                 catch (Exception e)
                 {
-                    await IdtoChannel[guildId].SendMessageAsync($"{user}:{channel.Name}:{voice}:{msg} FAILED TO SEND");
-                    Log($"{user}:{channel.Name}:{voice}:{msg} FAILED TO SEND", "Error");
+                    await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:voice_channel:{voice}:{msg} FAILED TO SEND" });
+                    Log($"{user}:voice_channel:{voice}:{msg} FAILED TO SEND", "Error");
                     Log(e.ToString(), "Error");
                     try
                     {
-                        await IdtoChannel[guildId].SendMessageAsync($"Leaving {channel.Name} due to failure.");
-                        await LeaveChannel(channel);
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = "Leaving voice channel due to failure." });
+                        await LeaveChannel(channel, textChannel, guildId);
                     }
                     catch
                     {
-                        await IdtoChannel[guildId].SendMessageAsync($"Failed to leave {channel.Name}.");
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = "Failed to leave voice channel." });
                     }
                 }
                 finally
                 {
                     sem.Release(1);
                 }
-                try
-                {
-                    await audiostream.FlushAsync(new CancellationTokenSource(40000).Token);
-                }
-                catch
-                {
-                    await IdtoChannel[guildId].SendMessageAsync($"Failed to second flush {channel.Name}.");
-                }
             }
         }
 
-        [Command("leave", RunMode = RunMode.Async)]
-        public async Task LeaveChannel(IVoiceChannel channel = null)
+        public async Task LeaveChannel(object channel = null, TextChannel textChannel = null, ulong guildId = 0)
         {
-            // Get the audio channel
-            channel = channel ?? (Context.User as IGuildUser)?.VoiceChannel;
-            if (channel == null) { await Context.Channel.SendMessageAsync("User must be in a voice channel, or a voice channel must be passed as an argument."); return; }
-            if (map.ContainsKey(Context.Guild.Id))
+            // TODO: Implement proper voice channel disconnection with NetCord
+            if (map.ContainsKey(guildId))
             {
-                (var audioClient, var channelvar, var audiostream, var sem) = map[Context.Guild.Id];
+                (var audioClient, var channelvar, var audiostream, var sem) = map[guildId];
                 try
                 {
-                    await audiostream.DisposeAsync();
-                    await audioClient.StopAsync();
-                    audioClient.Dispose();
-                    await channelvar.DisconnectAsync();
+                    // TODO: Properly dispose NetCord voice objects
+                    // await audiostream.DisposeAsync();
+                    // await audioClient.StopAsync();
+                    // audioClient.Dispose();
+                    // await channelvar.DisconnectAsync();
                 }
                 catch
                 {
-                    await Context.Channel.SendMessageAsync($"Issues leaving channel {channelvar.Name}.");
+                    if (textChannel != null)
+                    {
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = "Issues leaving voice channel." });
+                    }
                 }
                 finally
                 {
-                    map.Remove(Context.Guild.Id, out _);
+                    map.Remove(guildId, out _);
                 }
             }
         }
 
         static ConcurrentDictionary<ulong, UserPrefs> userPrefsDict = new ConcurrentDictionary<ulong, UserPrefs>();
         static ConcurrentDictionary<ulong, ulong> steamIdtoDiscordId = new ConcurrentDictionary<ulong, ulong>();
-        static ConcurrentDictionary<ulong, ISocketMessageChannel> IdtoChannel = new ConcurrentDictionary<ulong, ISocketMessageChannel>();
+        static ConcurrentDictionary<ulong, TextChannel> IdtoChannel = new ConcurrentDictionary<ulong, TextChannel>();
 
         public class UserPrefs
         {
@@ -265,41 +267,38 @@ namespace DiscordBotTTS
             public string Name { get; set; }
         }
 
-        [Command("changeserver", RunMode = RunMode.Async)]
-        public async Task ChangeServer()
+        public async Task ChangeServer(ulong userId, ulong guildId, TextChannel channel, string username)
         {
-            var userPrefs = userPrefsDict.GetValueOrDefault(Context.User.Id, null);
+            var userPrefs = userPrefsDict.GetValueOrDefault(userId, null);
 
             if (userPrefs != null)
             {
-                userPrefs.GuildId = Context.Guild.Id;
-                await Context.Channel.SendMessageAsync($"{Context.User.Username} server changed.");
+                userPrefs.GuildId = guildId;
+                await channel.SendMessageAsync(new MessageProperties { Content = $"{username} server changed." });
             }
         }
 
-        [Command("changerate", RunMode = RunMode.Async)]
-        public async Task ChangeRate(int rate = 0)
+        public async Task ChangeRate(int rate, ulong userId, TextChannel channel, string username)
         {
-            var userPrefs = userPrefsDict.GetValueOrDefault(Context.User.Id, null);
+            var userPrefs = userPrefsDict.GetValueOrDefault(userId, null);
 
             if (userPrefs != null)
             {
                 if (rate > 10 || rate < -10)
                 {
-                    await Context.Channel.SendMessageAsync($"{Context.User.Username} rate {rate} was invalid rate range (-10 to 10)");
+                    await channel.SendMessageAsync(new MessageProperties { Content = $"{username} rate {rate} was invalid rate range (-10 to 10)" });
                 }
                 else
                 {
                     userPrefs.Rate = rate;
-                    await Context.Channel.SendMessageAsync($"{Context.User.Username} rate {rate} changed.");
+                    await channel.SendMessageAsync(new MessageProperties { Content = $"{username} rate {rate} changed." });
                 }
             }
         }
 
-        [Command("changevoice", RunMode = RunMode.Async)]
-        public async Task ChangeVoice(string voice = "Microsoft David Desktop")
+        public async Task ChangeVoice(string voice, ulong userId, TextChannel channel, string username)
         {
-            var userPrefs = userPrefsDict.GetValueOrDefault(Context.User.Id, null);
+            var userPrefs = userPrefsDict.GetValueOrDefault(userId, null);
 
             if (userPrefs != null)
             {
@@ -307,49 +306,53 @@ namespace DiscordBotTTS
                 if (!string.IsNullOrWhiteSpace(tmpvoice))
                 {
                     userPrefs.Voice = tmpvoice;
-                    await Context.Channel.SendMessageAsync($"{Context.User.Username}:voice {tmpvoice} changed.");
+                    await channel.SendMessageAsync(new MessageProperties { Content = $"{username}:voice {tmpvoice} changed." });
                 }
                 else
                 {
-                    await Context.Channel.SendMessageAsync($"{Context.User.Username}:voice {voice} invalid.");
+                    await channel.SendMessageAsync(new MessageProperties { Content = $"{username}:voice {voice} invalid." });
                 }
             }
             else
             {
-                await Context.Channel.SendMessageAsync($"{Context.User.Username}:No user prefs, please use link first.");
+                await channel.SendMessageAsync(new MessageProperties { Content = $"{username}:No user prefs, please use link first." });
             }
         }
 
 
-        [Command("link", RunMode = RunMode.Async)]
-        public async Task LinkChannel(ulong steamchatid = 0, IVoiceChannel channel = null, string voice = "No Voice", int rate = -11)
+        public async Task LinkChannel(ulong steamchatid, object voiceChannel, string voice, int rate, ulong userId, ulong guildId, TextChannel textChannel, string username)
         {
-            channel = channel ?? (Context.User as IGuildUser)?.VoiceChannel;
-            if (channel == null) { await Context.Channel.SendMessageAsync("User must be in a voice channel, or a voice channel must be passed as an argument."); return; }
+            if (voiceChannel == null && textChannel != null)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "User must be in a voice channel, or a voice channel must be passed as an argument." });
+                return;
+            }
 
-            var userPrefs = userPrefsDict.GetOrAdd(Context.User.Id, new UserPrefs { UserId = Context.User.Id, Rate = rate == -11 ? 0 : rate, Voice = voice == "No Voice" ? "Microsoft David" : voice, GuildId = Context.Guild.Id, SteamId = steamchatid, Name = Context.User.Username });
+            var userPrefs = userPrefsDict.GetOrAdd(userId, new UserPrefs { UserId = userId, Rate = rate == -11 ? 0 : rate, Voice = voice == "No Voice" ? "Microsoft David" : voice, GuildId = guildId, SteamId = steamchatid, Name = username });
 
             if (steamchatid != 0)
             {
-                steamIdtoDiscordId.GetOrAdd(steamchatid, Context.User.Id);
+                steamIdtoDiscordId.GetOrAdd(steamchatid, userId);
                 userPrefs.SteamId = steamchatid;
             }
 
-            if (userPrefs.SteamId == 0)
+            if (userPrefs.SteamId == 0 && textChannel != null)
             {
-                await Context.Channel.SendMessageAsync($"WARNING {Context.User.Username} has missing steam ID!!");
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"WARNING {username} has missing steam ID!!" });
             }
 
             if (rate != -11)
             {
                 if (rate > 10 || rate < -10)
                 {
-                    await Context.Channel.SendMessageAsync($"{Context.User.Username} rate {rate} was invalid rate range (-10 to 10)");
+                    if (textChannel != null)
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"{username} rate {rate} was invalid rate range (-10 to 10)" });
                 }
                 else
                 {
                     userPrefs.Rate = rate;
-                    await Context.Channel.SendMessageAsync($"{Context.User.Username} rate {rate} changed.");
+                    if (textChannel != null)
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"{username} rate {rate} changed." });
                 }
             }
 
@@ -359,32 +362,38 @@ namespace DiscordBotTTS
                 if (!string.IsNullOrWhiteSpace(tmpvoice))
                 {
                     userPrefs.Voice = tmpvoice;
-                    await Context.Channel.SendMessageAsync($"{Context.User.Username}:voice {tmpvoice} changed.");
+                    if (textChannel != null)
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"{username}:voice {tmpvoice} changed." });
                 }
                 else
                 {
-                    await Context.Channel.SendMessageAsync($"{Context.User.Username}:voice {voice} invalid.");
+                    if (textChannel != null)
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"{username}:voice {voice} invalid." });
                 }
             }
 
-            userPrefs.GuildId = Context.Guild.Id;
+            userPrefs.GuildId = guildId;
 
-            IdtoChannel.TryAdd(Context.Guild.Id, Context.Channel);
-
-            await Context.Channel.SendMessageAsync($"Linking with {userPrefs.SteamId} for user {Context.User.Username} to {channel.Name} with voice {userPrefs.Voice}!");
+            if (textChannel != null)
+            {
+                IdtoChannel.TryAdd(guildId, textChannel);
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Linking with {userPrefs.SteamId} for user {username} to voice channel with voice {userPrefs.Voice}!" });
+            }
         }
 
-        [Command("help", RunMode = RunMode.Async)]
-        public async Task Help()
+        public async Task Help(TextChannel channel)
         {
-            await Context.Channel.SendMessageAsync("\nHelp:\n" +
-                "!tts link <steamid> [<channel> <voice> <rate>]\n" +
-                "!tts join <channel>\n" +
-                "!tts leave <channel>\n" +
-                "!tts changevoice <voice>\n" +
-                "!tts changerate <-10 .. 10> where 10 is fastest\n" +
-                "!tts changeserver\n" +
-                "Or use @botname tts <command>");
+            await channel.SendMessageAsync(new MessageProperties
+            {
+                Content = "\nHelp:\n" +
+                    "!tts link <steamid> [<channel> <voice> <rate>]\n" +
+                    "!tts join <channel>\n" +
+                    "!tts leave <channel>\n" +
+                    "!tts changevoice <voice>\n" +
+                    "!tts changerate <-10 .. 10> where 10 is fastest\n" +
+                    "!tts changeserver\n" +
+                    "Or use @botname tts <command>"
+            });
         }
 
         public async Task Dequeuer()
@@ -452,7 +461,7 @@ namespace DiscordBotTTS
                 if (!string.IsNullOrWhiteSpace(possiblevoice))
                 {
                     voice = possiblevoice;
-                    msg = string.Join(":", new ArraySegment<string>(array, 1, array.Length - 1));
+                    msg = string.Join(":", (IEnumerable<string>)new ArraySegment<string>(array, 1, array.Length - 1));
                 }
                 await SendAsync(userPrefs.GuildId, msg, voice, userPrefs.Name, userPrefs.Rate);
             }

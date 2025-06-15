@@ -1,66 +1,72 @@
-﻿using Discord.Commands;
-using Discord.WebSocket;
+﻿using NetCord.Gateway;
+using NetCord.Rest;
 using System.Reflection;
 using System.Threading.Tasks;
+using System.Linq;
+using NetCord;
 
 namespace DiscordBotTTS
 {
     public class CommandHandler
     {
-        private readonly DiscordSocketClient _client;
-        private readonly CommandService _commands;
+        private readonly GatewayClient _client;
+        private readonly RestClient _restClient;
 
-        // Retrieve client and CommandService instance via ctor
-        public CommandHandler(DiscordSocketClient client, CommandService commands)
+        // Retrieve client and RestClient instance via ctor
+        public CommandHandler(GatewayClient client, RestClient restClient)
         {
-            _commands = commands;
+            _restClient = restClient;
             _client = client;
         }
 
         public async Task InstallCommandsAsync()
         {
             // Hook the MessageReceived event into our command handler
-            _client.MessageReceived += HandleCommandAsync;
-
-            // Here we discover all of the command modules in the entry 
-            // assembly and load them. Starting from Discord.NET 2.0, a
-            // service provider is required to be passed into the
-            // module registration method to inject the 
-            // required dependencies.
-            //
-            // If you do not use Dependency Injection, pass null.
-            // See Dependency Injection guide for more information.
-            await _commands.AddModulesAsync(assembly: Assembly.GetEntryAssembly(),
-                                            services: null);
+            _client.MessageCreate += HandleCommandAsync;
         }
 
-        private async Task HandleCommandAsync(SocketMessage messageParam)
+        private ValueTask HandleCommandAsync(NetCord.Gateway.Message message)
         {
-            // Don't process the command if it was a system message
-            var message = messageParam as SocketUserMessage;
-            if (message == null) return;
+            // Don't process the command if it was a system message or bot message
+            if (message.Author.IsBot) return ValueTask.CompletedTask;
 
             // Create a number to track where the prefix ends and the command begins
             int argPos = 0;
+            var content = message.Content;
 
-            // Determine if the message is a command based on the prefix and make sure no bots trigger commands
-            if (!(message.HasCharPrefix('!', ref argPos) ||
-                message.HasMentionPrefix(_client.CurrentUser, ref argPos)) ||
-                message.Author.IsBot)
-                return;
+            // Determine if the message is a command based on the prefix
+            if (!content.StartsWith('!'))
+                return ValueTask.CompletedTask;
 
-            // Create a WebSocket-based command context based on the message
-            var context = new SocketCommandContext(_client, message);
+            argPos = 1; // Skip the '!' prefix
 
-            // Execute the command with the command context we just
-            // created, along with the service provider for precondition checks.
-            await _commands.ExecuteAsync(
-                context: context,
-                argPos: argPos,
-                services: null);
+            // Simple command parsing - split by spaces
+            var args = content.Substring(argPos).Split(' ');
+            if (args.Length == 0) return ValueTask.CompletedTask;
+
+            var command = args[0].ToLower();
+
+            // Handle basic commands here for now
+            // This is simplified compared to Discord.Net's command framework
+            switch (command)
+            {
+                case "tts":
+                    // Handle TTS commands - delegate to TTSModule methods directly
+                    break;
+                case "say":
+                    // Handle say command - delegate to InfoModule functionality
+                    if (args.Length > 1)
+                    {
+                        var response = string.Join(" ", args.Skip(1));
+                        _ = Task.Run(async () =>
+                        {
+                            await _restClient.SendMessageAsync(message.ChannelId, new MessageProperties { Content = response });
+                        });
+                    }
+                    break;
+            }
+
+            return ValueTask.CompletedTask;
         }
-
-
     }
-
 }
