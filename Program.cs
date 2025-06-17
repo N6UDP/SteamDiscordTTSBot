@@ -248,8 +248,20 @@ namespace DiscordBotTTS
                     return;
                 }
                 
-                // For all other commands, delegate directly to the shared handler
-                await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username);
+                // Handle commands that don't need special parameter parsing
+                switch (commandName)
+                {
+                    case "voices":
+                    case "unlink":
+                    case "verify":
+                    case "leave":
+                    case "changeserver":
+                        await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username);
+                        break;
+                    default:
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"Unknown command: {commandName}" });
+                        break;
+                }
             }
             catch (Exception ex)
             {
