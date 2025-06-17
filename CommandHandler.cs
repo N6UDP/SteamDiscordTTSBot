@@ -100,27 +100,11 @@ namespace DiscordBotTTS
             return;
         }
 
-        private async Task HandleTTSCommand(NetCord.Gateway.Message message, string[] args)
+        // Public method for handling TTS commands that can be called from both text and slash commands
+        public async Task HandleTTSCommandAsync(string subCommand, TextChannel textChannel, ulong guildId, ulong userId, string username,
+            string[] args = null, ulong? voiceChannelId = null)
         {
-            if (args.Length < 2)
-            {
-                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - TTS command missing subcommand");
-                return;
-            }
-
-            var subCommand = args[1].ToLower();
             Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - TTS subcommand: {subCommand}");
-
-            var textChannel = message.Channel;
-            if (textChannel == null)
-            {
-                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Unable to get text channel from message");
-                return;
-            }
-
-            var guildId = message.GuildId ?? 0;
-            var userId = message.Author.Id;
-            var username = message.Author.Username;
 
             try
             {
@@ -128,7 +112,7 @@ namespace DiscordBotTTS
                 {
                     case "join":
                         Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS join command");
-                        await HandleJoinCommand(message, args, textChannel, guildId, userId, username);
+                        await HandleJoinCommandAsync(textChannel, guildId, userId, username, voiceChannelId);
                         break;
 
                     case "leave":
@@ -138,16 +122,7 @@ namespace DiscordBotTTS
 
                     case "link":
                         Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS link command");
-                        if (args.Length > 2 && ulong.TryParse(args[2], out ulong steamId))
-                        {
-                            var voice = args.Length > 3 ? args[3] : "Microsoft David";
-                            var linkRate = args.Length > 4 && int.TryParse(args[4], out int r) ? r : 0;
-                            await _ttsModule.LinkChannel(steamId, null, voice, linkRate, userId, guildId, textChannel, username);
-                        }
-                        else
-                        {
-                            await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts link <steamid> [voice] [rate]" });
-                        }
+                        await HandleLinkCommandAsync(args, textChannel, userId, guildId, username);
                         break;
 
                     case "unlink":
@@ -162,27 +137,12 @@ namespace DiscordBotTTS
 
                     case "changevoice":
                         Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS changevoice command");
-                        if (args.Length > 2)
-                        {
-                            var voice = string.Join(" ", args.Skip(2));
-                            await _ttsModule.ChangeVoice(voice, userId, textChannel, username);
-                        }
-                        else
-                        {
-                            await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts changevoice <voice name>" });
-                        }
+                        await HandleChangeVoiceCommandAsync(args, textChannel, userId, username);
                         break;
 
                     case "changerate":
                         Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS changerate command");
-                        if (args.Length > 2 && int.TryParse(args[2], out int rate))
-                        {
-                            await _ttsModule.ChangeRate(rate, userId, textChannel, username);
-                        }
-                        else
-                        {
-                            await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts changerate <-10 to 10>" });
-                        }
+                        await HandleChangeRateCommandAsync(args, textChannel, userId, username);
                         break;
 
                     case "changeserver":
@@ -213,22 +173,46 @@ namespace DiscordBotTTS
             }
         }
 
-        private async Task HandleJoinCommand(NetCord.Gateway.Message message, string[] args, TextChannel textChannel, ulong guildId, ulong userId, string username)
+        private async Task HandleTTSCommand(NetCord.Gateway.Message message, string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - TTS command missing subcommand");
+                return;
+            }
+
+            var subCommand = args[1].ToLower();
+            var textChannel = message.Channel;
+            if (textChannel == null)
+            {
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Unable to get text channel from message");
+                return;
+            }
+
+            var guildId = message.GuildId ?? 0;
+            var userId = message.Author.Id;
+            var username = message.Author.Username;
+
+            // Delegate to the shared handler
+            await HandleTTSCommandAsync(subCommand, textChannel, guildId, userId, username, args);
+        }
+
+        private async Task HandleJoinCommandAsync(TextChannel textChannel, ulong guildId, ulong userId, string username, ulong? voiceChannelId = null)
         {
             object targetVoiceChannel = null;
             string channelInfo = "unknown";
 
             try
             {
-                // Check if a voice channel ID was provided as an argument
-                if (args.Length > 2 && ulong.TryParse(args[2], out ulong channelId))
+                // Check if a voice channel ID was provided
+                if (voiceChannelId.HasValue)
                 {
-                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Voice channel ID provided: {channelId}");
+                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Voice channel ID provided: {voiceChannelId.Value}");
                     
                     // Try to get the voice channel from the guild cache
                     if (_client.Cache.Guilds.TryGetValue(guildId, out var guild))
                     {
-                        if (guild.Channels.TryGetValue(channelId, out var channel))
+                        if (guild.Channels.TryGetValue(voiceChannelId.Value, out var channel))
                         {
                             if (channel is VoiceGuildChannel voiceChannel)
                             {
@@ -238,13 +222,13 @@ namespace DiscordBotTTS
                             }
                             else
                             {
-                                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Channel {channelId} is not a voice channel." });
+                                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Channel {voiceChannelId.Value} is not a voice channel." });
                                 return;
                             }
                         }
                         else
                         {
-                            await textChannel.SendMessageAsync(new MessageProperties { Content = $"Voice channel {channelId} not found." });
+                            await textChannel.SendMessageAsync(new MessageProperties { Content = $"Voice channel {voiceChannelId.Value} not found." });
                             return;
                         }
                     }
@@ -261,8 +245,6 @@ namespace DiscordBotTTS
                     // Try to get the user's current voice channel from voice states
                     if (_client.Cache.Guilds.TryGetValue(guildId, out var guild))
                     {
-                        // Try to find the user's voice state
-                        // Note: NetCord might store voice states differently, this is a best-effort approach
                         var voiceStates = guild.VoiceStates;
                         if (voiceStates != null && voiceStates.TryGetValue(userId, out var voiceState) && voiceState.ChannelId.HasValue)
                         {
@@ -301,8 +283,47 @@ namespace DiscordBotTTS
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error in HandleJoinCommand: {ex.Message}");
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error in HandleJoinCommandAsync: {ex.Message}");
                 await textChannel.SendMessageAsync(new MessageProperties { Content = "An error occurred while trying to join the voice channel." });
+            }
+        }
+
+        private async Task HandleLinkCommandAsync(string[] args, TextChannel textChannel, ulong userId, ulong guildId, string username)
+        {
+            if (args != null && args.Length > 2 && ulong.TryParse(args[2], out ulong steamId))
+            {
+                var voice = args.Length > 3 ? args[3] : "Microsoft David";
+                var linkRate = args.Length > 4 && int.TryParse(args[4], out int r) ? r : 0;
+                await _ttsModule.LinkChannel(steamId, null, voice, linkRate, userId, guildId, textChannel, username);
+            }
+            else
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts link <steamid> [voice] [rate]" });
+            }
+        }
+
+        private async Task HandleChangeVoiceCommandAsync(string[] args, TextChannel textChannel, ulong userId, string username)
+        {
+            if (args != null && args.Length > 2)
+            {
+                var voice = string.Join(" ", args.Skip(2));
+                await _ttsModule.ChangeVoice(voice, userId, textChannel, username);
+            }
+            else
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts changevoice <voice name>" });
+            }
+        }
+
+        private async Task HandleChangeRateCommandAsync(string[] args, TextChannel textChannel, ulong userId, string username)
+        {
+            if (args != null && args.Length > 2 && int.TryParse(args[2], out int rate))
+            {
+                await _ttsModule.ChangeRate(rate, userId, textChannel, username);
+            }
+            else
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts changerate <-10 to 10>" });
             }
         }
     }

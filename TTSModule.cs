@@ -340,7 +340,23 @@ namespace DiscordBotTTS
                         }
                     }
                     
-                    // Dispose the voice client
+                    // Dispose the output stream BEFORE disposing the voice client
+                    if (outputStream != null)
+                    {
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Disposing output stream...");
+                        try
+                        {
+                            await outputStream.FlushAsync();
+                            outputStream.Dispose();
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Output stream disposed successfully");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error disposing output stream: {ex.Message}");
+                        }
+                    }
+                    
+                    // Dispose the voice client AFTER disposing the output stream
                     if (voiceClient != null)
                     {
                         Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Disposing voice client...");
@@ -352,20 +368,6 @@ namespace DiscordBotTTS
                         catch (Exception ex)
                         {
                             Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error disposing voice client: {ex.Message}");
-                        }
-                    }
-                    
-                    // Dispose the output stream
-                    if (outputStream != null)
-                    {
-                        try
-                        {
-                            await outputStream.FlushAsync();
-                            outputStream.Dispose();
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error disposing output stream: {ex.Message}");
                         }
                     }
                     
