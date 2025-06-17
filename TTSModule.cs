@@ -18,6 +18,8 @@ using static DiscordBotTTS.TTSModule;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
 using SteamKit2.CDN;
+using System.Net.Http;
+using System.Text;
 
 namespace DiscordBotTTS
 {
@@ -49,6 +51,10 @@ namespace DiscordBotTTS
         }
 
         private static GatewayClient _gatewayClient; // Store gateway client for proper disconnection
+        private static HttpClient _httpClient = new HttpClient() { Timeout = TimeSpan.FromSeconds(30) };
+        private static Process _coquiServerProcess;
+        private static bool _serverStarted = false;
+        private static readonly object _serverLock = new object();
         
         // Load Coqui voice configuration from app.config
         private static void LoadCoquiVoiceConfiguration()
@@ -57,26 +63,193 @@ namespace DiscordBotTTS
             {
                 try
                 {
-                    // Load Coqui voice model mappings from configuration
-                    var modelsConfig = ConfigurationManager.AppSettings.Get("CoquiVoiceModels");
-                    if (!string.IsNullOrEmpty(modelsConfig))
+                    var coquiMode = ConfigurationManager.AppSettings.Get("CoquiMode")?.ToLower() ?? "exe";
+                    
+                    if (coquiMode == "server")
                     {
-                        var pairs = modelsConfig.Split(';');
-                        foreach (var pair in pairs)
+                        // Load speakers for server mode
+                        var speakersConfig = ConfigurationManager.AppSettings.Get("CoquiSpeakers");
+                        if (!string.IsNullOrEmpty(speakersConfig))
                         {
-                            var parts = pair.Split(':');
-                            if (parts.Length == 2)
+                            var speakers = speakersConfig.Split(',');
+                            foreach (var speaker in speakers)
                             {
-                                coquiVoiceModels[parts[0].Trim()] = parts[1].Trim();
+                                var speakerName = speaker.Trim();
+                                // For server mode, we'll use speaker names instead of model names
+                                coquiVoiceModels[$"CoQui_{speakerName}"] = speakerName;
                             }
                         }
+                        
+                        Log($"Loaded {coquiVoiceModels.Count} Coqui speakers for server mode");
                     }
-                    
-                    Log($"Loaded {coquiVoiceModels.Count} Coqui voice models from configuration");
+                    else
+                    {
+                        // Load voice model mappings for exe mode (legacy)
+                        var modelsConfig = ConfigurationManager.AppSettings.Get("CoquiVoiceModels");
+                        if (!string.IsNullOrEmpty(modelsConfig))
+                        {
+                            var pairs = modelsConfig.Split(';');
+                            foreach (var pair in pairs)
+                            {
+                                var parts = pair.Split(':');
+                                if (parts.Length == 2)
+                                {
+                                    coquiVoiceModels[parts[0].Trim()] = parts[1].Trim();
+                                }
+                            }
+                        }
+                        
+                        Log($"Loaded {coquiVoiceModels.Count} Coqui voice models for exe mode");
+                    }
                 }
                 catch (Exception ex)
                 {
                     Log($"Error loading Coqui voice configuration: {ex.Message}", "Warning");
+                }
+            }
+        }
+        
+        // Initialize Coqui TTS server on application startup
+        public static async Task InitializeCoquiServerAsync()
+        {
+            var coquiMode = ConfigurationManager.AppSettings.Get("CoquiMode")?.ToLower() ?? "exe";
+            if (coquiMode == "server")
+            {
+                Log("Initializing Coqui TTS server at startup...");
+                await EnsureCoquiServerStarted();
+                
+                // Wait a bit longer for the server to fully initialize
+                await Task.Delay(5000);
+                
+                // Test the server connection
+                try
+                {
+                    var port = ConfigurationManager.AppSettings.Get("coqui_server_port") ?? "5002";
+                    var response = await _httpClient.GetAsync($"http://localhost:{port}/");
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Log("Coqui TTS server initialization completed successfully");
+                    }
+                    else
+                    {
+                        Log($"Coqui TTS server responded with status: {response.StatusCode}", "Warning");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"Could not connect to Coqui TTS server: {ex.Message}", "Warning");
+                }
+            }
+            else
+            {
+                Log("Coqui TTS server mode disabled - using exe mode");
+            }
+        }
+        
+        // Cleanup Coqui TTS server on application exit
+        public static void CleanupCoquiServer()
+        {
+            lock (_serverLock)
+            {
+                if (_coquiServerProcess != null && !_coquiServerProcess.HasExited)
+                {
+                    try
+                    {
+                        Log("Shutting down Coqui TTS server...");
+                        _coquiServerProcess.Kill();
+                        _coquiServerProcess.WaitForExit(5000); // Wait up to 5 seconds
+                        _coquiServerProcess.Dispose();
+                        _coquiServerProcess = null;
+                        _serverStarted = false;
+                        Log("Coqui TTS server shutdown completed");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"Error shutting down Coqui TTS server: {ex.Message}", "Warning");
+                    }
+                }
+            }
+        }
+        
+        // Start Coqui TTS Server if configured
+        private static async Task<bool> EnsureCoquiServerStarted()
+        {
+            var coquiMode = ConfigurationManager.AppSettings.Get("CoquiMode")?.ToLower() ?? "exe";
+            if (coquiMode != "server")
+                return false; // Not using server mode
+                
+            lock (_serverLock)
+            {
+                if (_serverStarted && _coquiServerProcess != null && !_coquiServerProcess.HasExited)
+                    return true; // Already running
+                    
+                try
+                {
+                    var serverPath = ConfigurationManager.AppSettings.Get("coqui_server");
+                    var port = ConfigurationManager.AppSettings.Get("coqui_server_port") ?? "5002";
+                    var useCuda = bool.Parse(ConfigurationManager.AppSettings.Get("coqui_server_use_cuda") ?? "false");
+                    var debug = bool.Parse(ConfigurationManager.AppSettings.Get("coqui_server_debug") ?? "false");
+                    var model = ConfigurationManager.AppSettings.Get("coqui_server_model") ?? "tts_models/en/ljspeech/tacotron2-DDC";
+                    
+                    if (string.IsNullOrEmpty(serverPath))
+                    {
+                        Log("Coqui server path not configured", "Warning");
+                        return false;
+                    }
+                    
+                    var args = new List<string>
+                    {
+                        "--port", port,
+                        "--model_name", model
+                    };
+                    
+                    if (useCuda)
+                        args.Add("--use_cuda");
+                        
+                    if (debug)
+                        args.Add("--debug");
+                    
+                    Log($"Starting Coqui TTS server: {serverPath} {string.Join(" ", args)}");
+                    
+                    _coquiServerProcess = new Process
+                    {
+                        StartInfo = new ProcessStartInfo
+                        {
+                            FileName = serverPath,
+                            Arguments = string.Join(" ", args),
+                            UseShellExecute = false,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            CreateNoWindow = true
+                        }
+                    };
+                    
+                    // Log server output
+                    _coquiServerProcess.OutputDataReceived += (sender, e) =>
+                    {
+                        if (!string.IsNullOrEmpty(e.Data))
+                            Log($"CoquiServer: {e.Data}");
+                    };
+                    
+                    _coquiServerProcess.ErrorDataReceived += (sender, e) =>
+                    {
+                        if (!string.IsNullOrEmpty(e.Data))
+                            Log($"CoquiServer ERROR: {e.Data}", "Warning");
+                    };
+                    
+                    _coquiServerProcess.Start();
+                    _coquiServerProcess.BeginOutputReadLine();
+                    _coquiServerProcess.BeginErrorReadLine();
+                    
+                    _serverStarted = true;
+                    Log($"Coqui TTS server started on port {port}");
+                    
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Log($"Failed to start Coqui TTS server: {ex.Message}", "Error");
+                    return false;
                 }
             }
         }
@@ -206,13 +379,31 @@ namespace DiscordBotTTS
             });
         }
 
-        private Process CreateTTSFile(string cleanmsg, string voice, out string path)
+        private async Task<(Process process, string path)> CreateTTSFile(string cleanmsg, string voice)
         {
-            path = Path.GetTempFileName() + ".wav"; // Ensure wav extension for Coqui TTS
+            var path = Path.GetTempFileName() + ".wav"; // Ensure wav extension for Coqui TTS
             
             // Load Coqui configuration if not already loaded
             LoadCoquiVoiceConfiguration();
             
+            var coquiMode = ConfigurationManager.AppSettings.Get("CoquiMode")?.ToLower() ?? "exe";
+            
+            if (coquiMode == "server")
+            {
+                // Use server API mode
+                var process = await CreateTTSFileViaServer(cleanmsg, voice, path);
+                return (process, path);
+            }
+            else
+            {
+                // Use legacy exe mode
+                var process = CreateTTSFileViaExe(cleanmsg, voice, path);
+                return (process, path);
+            }
+        }
+        
+        private Process CreateTTSFileViaExe(string cleanmsg, string voice, string path)
+        {
             // Get model for the specified voice from configuration
             string modelName = "tts_models/en/ljspeech/tacotron2-DDC"; // Default
             if (coquiVoiceModels.TryGetValue(voice, out var configuredModel))
@@ -230,6 +421,70 @@ namespace DiscordBotTTS
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             });
+        }
+        
+        private async Task<Process> CreateTTSFileViaServer(string cleanmsg, string voice, string path)
+        {
+            try
+            {
+                // Ensure server is started
+                if (!await EnsureCoquiServerStarted())
+                {
+                    Log("Coqui server not available, falling back to exe mode", "Warning");
+                    return CreateTTSFileViaExe(cleanmsg, voice, path);
+                }
+                
+                var port = ConfigurationManager.AppSettings.Get("coqui_server_port") ?? "5002";
+                var timeout = int.Parse(ConfigurationManager.AppSettings.Get("coqui_server_timeout") ?? "30");
+                
+                // Get speaker name from voice mapping
+                string speakerName = "default";
+                if (coquiVoiceModels.TryGetValue(voice, out var configuredSpeaker))
+                {
+                    speakerName = configuredSpeaker;
+                }
+                
+                var requestData = new
+                {
+                    text = cleanmsg,
+                    speaker_id = speakerName
+                };
+                
+                var json = System.Text.Json.JsonSerializer.Serialize(requestData);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                
+                Log($"Calling Coqui TTS server API: text='{cleanmsg}', speaker='{speakerName}'");
+                
+                var response = await _httpClient.PostAsync($"http://localhost:{port}/api/tts", content);
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    var audioData = await response.Content.ReadAsByteArrayAsync();
+                    await File.WriteAllBytesAsync(path, audioData);
+                    
+                    Log($"Successfully generated TTS via server API: {path}");
+                    
+                    // Return a dummy completed process since we already have the file
+                    return Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "cmd.exe",
+                        Arguments = "/c echo TTS completed via server API",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true
+                    });
+                }
+                else
+                {
+                    Log($"Coqui server API failed: {response.StatusCode}", "Warning");
+                    return CreateTTSFileViaExe(cleanmsg, voice, path);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Error calling Coqui server API: {ex.Message}", "Warning");
+                return CreateTTSFileViaExe(cleanmsg, voice, path);
+            }
         }
         private async Task SendAsync(ulong guildId, string msg, string voice = "Microsoft David Desktop", string user = "", int rate = 0, RestClient restClient = null)
         {
@@ -255,7 +510,8 @@ namespace DiscordBotTTS
             {
                 if (voice.StartsWith("CoQui"))
                 {
-                    using (var coquitts = CreateTTSFile(cleanmsg, voice, out string coquittspath))
+                    var (coquitts, coquittspath) = await CreateTTSFile(cleanmsg, voice);
+                    using (coquitts)
                     {
                         await coquitts.WaitForExitAsync();
                         using (var ffmpeg = CreateStream(coquittspath))

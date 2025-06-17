@@ -25,6 +25,21 @@ namespace DiscordBotTTS
 
         public async Task MainAsync()
         {
+            // Set up cleanup handlers for graceful shutdown
+            Console.CancelKeyPress += (sender, e) =>
+            {
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Ctrl+C received, shutting down gracefully...");
+                e.Cancel = true; // Prevent immediate termination
+                TTSModule.CleanupCoquiServer();
+                Environment.Exit(0);
+            };
+            
+            AppDomain.CurrentDomain.ProcessExit += (sender, e) =>
+            {
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Application exiting, cleaning up...");
+                TTSModule.CleanupCoquiServer();
+            };
+            
             try
             {
                 Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Starting bot initialization...");
@@ -70,6 +85,9 @@ namespace DiscordBotTTS
 
                 _ch = new CommandHandler(_client, _restClient);
                 await _ch.InstallCommandsAsync();
+
+                // Start Coqui TTS server if configured for server mode
+                await TTSModule.InitializeCoquiServerAsync();
 
                 Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Starting NetCord client...");
                 await _client.StartAsync();
