@@ -11,17 +11,10 @@ For running it you need to rename `App.config.example` to `App.config` and edit 
 * Having a steam account you'd like to use as a message reciever (bot-ish, it never sends messages) (I have not read their terms of service, but it may be against them, use at your own risk etc etc).
 * Having a discord bot account you'd like to use
 
-## Completed Features
-
-* ✅ Add explicit unlink command - `!tts unlink` and `/unlink`
-* ✅ Add command to verify link - `!tts verify` and `/verify`
-* ✅ Add full slash command support - All commands now support both `!tts` and `/` formats
-* ✅ Fix leave command - Improved error handling and removed duplicate messages
-* ✅ Complete coqui tts support by allowing voice selection - Enhanced voice selection with CoQui prefix support
-
 ## Usage
 
 ### Text Commands
+
 * `!tts link <steamid> [voice] [rate]` - Link Steam account to Discord
 * `!tts unlink` - Unlink Steam account
 * `!tts verify` - Check current link status
@@ -34,8 +27,10 @@ For running it you need to rename `App.config.example` to `App.config` and edit 
 * `!tts help` - Show help
 
 ### Slash Commands
+
 All commands are also available as slash commands (e.g., `/link`, `/join`, `/changevoice`, etc.)
 
 ### Voice Support
+
 * **System Voices**: Microsoft David Desktop, Microsoft Zira Desktop, etc.
 * **Coqui TTS Voices**: Any voice starting with "CoQui" prefix (e.g., CoQui_female_1, CoQui_male_1, etc.)

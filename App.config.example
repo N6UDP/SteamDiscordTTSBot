@@ -9,5 +9,9 @@
         <!-- Optional experimental coqui tts support -->
         <add key="ffmpeg" value="C:\tts\Scripts\ffmpeg.exe" />
         <add key="coquitts" value="C:\tts\Scripts\tts.exe" />
+        
+        <!-- Coqui TTS Voice Configuration -->
+        <!-- Define available Coqui voices and their models (semicolon-separated voice:model pairs) -->
+        <add key="CoquiVoiceModels" value="CoQui_female_1:tts_models/en/ljspeech/tacotron2-DDC;CoQui_female_2:tts_models/en/ljspeech/glow-tts;CoQui_male_1:tts_models/en/sam/tacotron-DDC;CoQui_male_2:tts_models/en/blizzard2013/capacitron-t2-c50;CoQui_neutral:tts_models/en/ljspeech/speedy-speech" />
     </appSettings>
 </configuration>

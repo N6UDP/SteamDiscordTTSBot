@@ -50,6 +50,37 @@ namespace DiscordBotTTS
 
         private static GatewayClient _gatewayClient; // Store gateway client for proper disconnection
         
+        // Load Coqui voice configuration from app.config
+        private static void LoadCoquiVoiceConfiguration()
+        {
+            if (coquiVoiceModels.Count == 0) // Only load once
+            {
+                try
+                {
+                    // Load Coqui voice model mappings from configuration
+                    var modelsConfig = ConfigurationManager.AppSettings.Get("CoquiVoiceModels");
+                    if (!string.IsNullOrEmpty(modelsConfig))
+                    {
+                        var pairs = modelsConfig.Split(';');
+                        foreach (var pair in pairs)
+                        {
+                            var parts = pair.Split(':');
+                            if (parts.Length == 2)
+                            {
+                                coquiVoiceModels[parts[0].Trim()] = parts[1].Trim();
+                            }
+                        }
+                    }
+                    
+                    Log($"Loaded {coquiVoiceModels.Count} Coqui voice models from configuration");
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error loading Coqui voice configuration: {ex.Message}", "Warning");
+                }
+            }
+        }
+        
         // The command's Run Mode MUST be set to RunMode.Async, otherwise, being connected to a voice channel will block the gateway thread.
         public async Task JoinChannel(object channel = null, TextChannel textChannel = null, ulong guildId = 0, GatewayClient gatewayClient = null)
         {
@@ -179,16 +210,17 @@ namespace DiscordBotTTS
         {
             path = Path.GetTempFileName() + ".wav"; // Ensure wav extension for Coqui TTS
             
-            // Map voice names to Coqui TTS model parameters
-            var modelArgs = voice switch
+            // Load Coqui configuration if not already loaded
+            LoadCoquiVoiceConfiguration();
+            
+            // Get model for the specified voice from configuration
+            string modelName = "tts_models/en/ljspeech/tacotron2-DDC"; // Default
+            if (coquiVoiceModels.TryGetValue(voice, out var configuredModel))
             {
-                "CoQui_female_1" => "--model_name tts_models/en/ljspeech/tacotron2-DDC",
-                "CoQui_female_2" => "--model_name tts_models/en/ljspeech/glow-tts",
-                "CoQui_male_1" => "--model_name tts_models/en/sam/tacotron-DDC",
-                "CoQui_male_2" => "--model_name tts_models/en/blizzard2013/capacitron-t2-c50",
-                "CoQui_neutral" => "--model_name tts_models/en/ljspeech/speedy-speech",
-                _ => "--model_name tts_models/en/ljspeech/tacotron2-DDC" // Default
-            };
+                modelName = configuredModel;
+            }
+            
+            var modelArgs = $"--model_name {modelName}";
             
             return Process.Start(new ProcessStartInfo
             {
@@ -678,14 +710,7 @@ namespace DiscordBotTTS
         }
 
         static List<string> voices = new List<string>();
-        static List<string> coquiVoices = new List<string>()
-        {
-            "CoQui_female_1",
-            "CoQui_female_2",
-            "CoQui_male_1",
-            "CoQui_male_2",
-            "CoQui_neutral"
-        };
+        static Dictionary<string, string> coquiVoiceModels = new Dictionary<string, string>();
         
         public string CheckVoice(string voice)
         {
@@ -694,14 +719,22 @@ namespace DiscordBotTTS
             // Check for Coqui TTS voices - any voice starting with "CoQui" prefix
             if (voice.StartsWith("CoQui", StringComparison.OrdinalIgnoreCase))
             {
+                // Load Coqui configuration if not already loaded
+                LoadCoquiVoiceConfiguration();
+                
                 // Allow generic "CoQui" for default
                 if (voice.Equals("CoQui", StringComparison.OrdinalIgnoreCase))
                 {
-                    return "CoQui_female_1";  // Default Coqui voice
+                    return coquiVoiceModels.Keys.FirstOrDefault() ?? "CoQui_female_1";  // Use first configured voice or default
                 }
                 
-                // For any CoQui prefixed voice, just return it as-is to allow flexibility
-                // The actual model selection will be handled in CreateTTSFile
+                // Check if the voice is in our configured list
+                if (coquiVoiceModels.ContainsKey(voice))
+                {
+                    return voice;
+                }
+                
+                // If not found in configured list but starts with CoQui, allow it anyway for flexibility
                 return voice;
             }
             
@@ -740,8 +773,13 @@ namespace DiscordBotTTS
                 synth.Dispose();
             }
             
+            // Load Coqui configuration if not already loaded
+            LoadCoquiVoiceConfiguration();
+            
             var systemVoices = string.Join("\n", voices.Select(v => $"• {v}"));
-            var coquiVoiceList = string.Join("\n", coquiVoices.Select(v => $"• {v}"));
+            var coquiVoiceList = coquiVoiceModels.Count > 0
+                ? string.Join("\n", coquiVoiceModels.Keys.Select(v => $"• {v}"))
+                : "• No Coqui voices configured";
             
             await channel.SendMessageAsync(new MessageProperties
             {
