@@ -7,7 +7,6 @@
 App.config
 *.bak
 *.json
-.memory
 
 # User-specific files
 *.rsuser

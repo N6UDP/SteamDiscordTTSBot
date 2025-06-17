@@ -1,0 +1,1 @@
+Please reference and use the memory bank and instructions available at .memory/README.md

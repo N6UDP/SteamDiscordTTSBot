@@ -10,3 +10,6 @@ For running it you need to rename `App.config.example` to `App.config` and edit 
 
 ## Todos
 * Add unlink (not strictly needed as we let you adjust your link even today)
+* Add full slash command support
+* Fix leave command
+* Complete coqui tts support and/or other new TTS engine support
