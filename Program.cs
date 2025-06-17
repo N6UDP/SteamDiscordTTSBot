@@ -95,43 +95,61 @@ namespace DiscordBotTTS
                 Console.WriteLine($"  - {guild.Name} (ID: {guild.Id})");
             }
 
-            Dictionary<string, string> commands = new Dictionary<string, string>()
+            Dictionary<string, (string description, List<ApplicationCommandOptionProperties> options)> commands = new Dictionary<string, (string, List<ApplicationCommandOptionProperties>)>()
             {
-                {"help", "Gets command help" },
-                {"link", "<steamid> [<channel> <voice> <rate>]" },
-                {"join", "<channel>" },
-                {"leave", "<channel>" },
-                {"changevoice", "<voice>" },
-                {"changerate", "<-10 .. 10> where 10 is fastest" },
-                {"changeserver", "Changes server" }
+                {"help", ("Gets command help", new List<ApplicationCommandOptionProperties>())},
+                {"link", ("Link Steam account to Discord", new List<ApplicationCommandOptionProperties>
+                {
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "steamid", "Your Steam ID") { Required = true },
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "voice", "TTS Voice (optional)") { Required = false },
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.Integer, "rate", "Speech rate (-10 to 10)") { Required = false }
+                })},
+                {"unlink", ("Unlink Steam account from Discord", new List<ApplicationCommandOptionProperties>())},
+                {"verify", ("Verify your current link status", new List<ApplicationCommandOptionProperties>())},
+                {"join", ("Join voice channel", new List<ApplicationCommandOptionProperties>
+                {
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.Channel, "channel", "Voice channel to join (optional)") { Required = false }
+                })},
+                {"leave", ("Leave voice channel", new List<ApplicationCommandOptionProperties>())},
+                {"voices", ("List available TTS voices", new List<ApplicationCommandOptionProperties>())},
+                {"changevoice", ("Change TTS voice", new List<ApplicationCommandOptionProperties>
+                {
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "voice", "Voice name") { Required = true }
+                })},
+                {"changerate", ("Change speech rate", new List<ApplicationCommandOptionProperties>
+                {
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.Integer, "rate", "Speech rate (-10 to 10)") { Required = true }
+                })},
+                {"changeserver", ("Change server", new List<ApplicationCommandOptionProperties>())}
             };
             
             List<SlashCommandProperties> builtCommands = new List<SlashCommandProperties>();
-            foreach ((var command, var desc) in commands)
+            foreach ((var command, (var description, var options)) in commands)
             {
-                var commandData = new SlashCommandProperties(command, desc)
+                var commandData = new SlashCommandProperties(command, description)
                 {
-                    Options = new List<ApplicationCommandOptionProperties>
-                    {
-                        new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "args", "Arguments")
-                        {
-                            Required = false
-                        }
-                    }
+                    Options = options
                 };
                 builtCommands.Add(commandData);
             }
-            // TODO: This could be parallel...
-
-            /*
+            
+            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Registering {builtCommands.Count} slash commands...");
+            
             foreach (var guild in _client.Cache.Guilds.Values)
             {
-                foreach (var prop in builtCommands)
+                try
                 {
-                    await _restClient.CreateGuildApplicationCommandAsync(guild.Id, prop);
+                    foreach (var prop in builtCommands)
+                    {
+                        await _restClient.CreateGuildApplicationCommandAsync(guild.Id, guild.Id, prop);
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Registered /{prop.Name} command for guild {guild.Name}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error registering commands for guild {guild.Name}: {ex.Message}");
                 }
             }
-            */
         }
 
         private TTSModule slashtts;
@@ -142,19 +160,131 @@ namespace DiscordBotTTS
             
             try
             {
+                var textChannel = command.Channel as TextChannel;
+                var userId = command.User.Id;
+                var username = command.User.Username;
+                var guildId = command.GuildId.Value;
+                
                 switch (command.Data.Name)
                 {
-                    case "join":
-                        await command.SendResponseAsync(InteractionCallback.Message("Done"));
-                        // For now, we'll pass null for the voice channel - will need to implement voice state tracking
-                        if (command.Channel is TextChannel textChannel)
+                    case "help":
+                        await command.SendResponseAsync(InteractionCallback.Message("TTS Bot Help:\n" +
+                            "/link <steamid> [voice] [rate] - Link Steam account\n" +
+                            "/unlink - Unlink Steam account\n" +
+                            "/verify - Check link status\n" +
+                            "/join [channel] - Join voice channel\n" +
+                            "/leave - Leave voice channel\n" +
+                            "/changevoice <voice> - Change TTS voice\n" +
+                            "/changerate <rate> - Change speech rate\n" +
+                            "/changeserver - Change server"));
+                        break;
+                        
+                    case "link":
+                        var steamIdStr = command.Data.Options?.FirstOrDefault(o => o.Name == "steamid")?.Value?.ToString();
+                        var voice = command.Data.Options?.FirstOrDefault(o => o.Name == "voice")?.Value?.ToString() ?? "Microsoft David";
+                        var rateObj = command.Data.Options?.FirstOrDefault(o => o.Name == "rate")?.Value;
+                        var rate = rateObj != null ? Convert.ToInt32(rateObj) : 0;
+                        
+                        if (steamIdStr != null && ulong.TryParse(steamIdStr, out ulong steamId))
                         {
-                            await slashtts.JoinChannel(null, textChannel, command.GuildId.Value, _client);
+                            await command.SendResponseAsync(InteractionCallback.Message("Linking account..."));
+                            await slashtts.LinkChannel(steamId, null, voice, rate, userId, guildId, textChannel, username);
+                        }
+                        else
+                        {
+                            await command.SendResponseAsync(InteractionCallback.Message("Invalid Steam ID provided."));
                         }
                         break;
+                        
+                    case "unlink":
+                        await command.SendResponseAsync(InteractionCallback.Message("Unlinking account..."));
+                        await slashtts.UnlinkChannel(userId, textChannel, username);
+                        break;
+                        
+                    case "verify":
+                        await command.SendResponseAsync(InteractionCallback.Message("Checking link status..."));
+                        await slashtts.VerifyLink(userId, textChannel, username);
+                        break;
+                        
+                    case "join":
+                        var channelOption = command.Data.Options?.FirstOrDefault(o => o.Name == "channel")?.Value;
+                        object targetChannel = null;
+                        
+                        if (channelOption != null && ulong.TryParse(channelOption.ToString(), out ulong channelId))
+                        {
+                            if (_client.Cache.Guilds.TryGetValue(guildId, out var guild))
+                            {
+                                if (guild.Channels.TryGetValue(channelId, out var channel) && channel is VoiceGuildChannel voiceChannel)
+                                {
+                                    targetChannel = voiceChannel;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Try to get user's current voice channel
+                            if (_client.Cache.Guilds.TryGetValue(guildId, out var guild))
+                            {
+                                var voiceStates = guild.VoiceStates;
+                                if (voiceStates != null && voiceStates.TryGetValue(userId, out var voiceState) && voiceState.ChannelId.HasValue)
+                                {
+                                    var userVoiceChannelId = voiceState.ChannelId.Value;
+                                    if (guild.Channels.TryGetValue(userVoiceChannelId, out var userChannel) && userChannel is VoiceGuildChannel userVoiceChannel)
+                                    {
+                                        targetChannel = userVoiceChannel;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        await command.SendResponseAsync(InteractionCallback.Message("Joining voice channel..."));
+                        await slashtts.JoinChannel(targetChannel, textChannel, guildId, _client);
+                        break;
+                        
+                    case "leave":
+                        await command.SendResponseAsync(InteractionCallback.Message("Leaving voice channel..."));
+                        await slashtts.LeaveChannel(null, textChannel, guildId);
+                        break;
+                        
+                    case "voices":
+                        await command.SendResponseAsync(InteractionCallback.Message("Listing available voices..."));
+                        await slashtts.ListVoices(textChannel);
+                        break;
+                        
+                    case "changevoice":
+                        var newVoice = command.Data.Options?.FirstOrDefault(o => o.Name == "voice")?.Value?.ToString();
+                        if (newVoice != null)
+                        {
+                            await command.SendResponseAsync(InteractionCallback.Message("Changing voice..."));
+                            await slashtts.ChangeVoice(newVoice, userId, textChannel, username);
+                        }
+                        else
+                        {
+                            await command.SendResponseAsync(InteractionCallback.Message("Voice name is required."));
+                        }
+                        break;
+                        
+                    case "changerate":
+                        var newRateObj = command.Data.Options?.FirstOrDefault(o => o.Name == "rate")?.Value;
+                        if (newRateObj != null)
+                        {
+                            var newRate = Convert.ToInt32(newRateObj);
+                            await command.SendResponseAsync(InteractionCallback.Message("Changing rate..."));
+                            await slashtts.ChangeRate(newRate, userId, textChannel, username);
+                        }
+                        else
+                        {
+                            await command.SendResponseAsync(InteractionCallback.Message("Rate value is required."));
+                        }
+                        break;
+                        
+                    case "changeserver":
+                        await command.SendResponseAsync(InteractionCallback.Message("Changing server..."));
+                        await slashtts.ChangeServer(userId, guildId, textChannel, username);
+                        break;
+                        
                     default:
-                        var optionValue = command.Data.Options?.FirstOrDefault()?.Value?.ToString() ?? "no args";
-                        await command.SendResponseAsync(InteractionCallback.Message($"You executed {command.Data.Name} with {optionValue} which isn't yet implemented."));
+                        await command.SendResponseAsync(InteractionCallback.Message($"Unknown command: {command.Data.Name}"));
                         break;
                 }
             }

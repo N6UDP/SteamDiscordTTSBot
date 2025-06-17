@@ -48,6 +48,8 @@ namespace DiscordBotTTS
             _restClient = restClient;
         }
 
+        private static GatewayClient _gatewayClient; // Store gateway client for proper disconnection
+        
         // The command's Run Mode MUST be set to RunMode.Async, otherwise, being connected to a voice channel will block the gateway thread.
         public async Task JoinChannel(object channel = null, TextChannel textChannel = null, ulong guildId = 0, GatewayClient gatewayClient = null)
         {
@@ -105,6 +107,9 @@ namespace DiscordBotTTS
                 {
                     await textChannel.SendMessageAsync(new MessageProperties { Content = $"Connected to voice channel: {voiceChannel.Name}" });
                 }
+                
+                // Store the gateway client for proper disconnection
+                _gatewayClient = gatewayClient;
                 
                 // Store the voice connection
                 map[guildId] = (voiceClient, voiceChannel, outputStream, new SemaphoreSlim(1, 1));
@@ -170,15 +175,28 @@ namespace DiscordBotTTS
             });
         }
 
-        private Process CreateTTSFile(string cleanmsg, out string path)
+        private Process CreateTTSFile(string cleanmsg, string voice, out string path)
         {
-            path = Path.GetTempFileName();
+            path = Path.GetTempFileName() + ".wav"; // Ensure wav extension for Coqui TTS
+            
+            // Map voice names to Coqui TTS model parameters
+            var modelArgs = voice switch
+            {
+                "CoQui_female_1" => "--model_name tts_models/en/ljspeech/tacotron2-DDC",
+                "CoQui_female_2" => "--model_name tts_models/en/ljspeech/glow-tts",
+                "CoQui_male_1" => "--model_name tts_models/en/sam/tacotron-DDC",
+                "CoQui_male_2" => "--model_name tts_models/en/blizzard2013/capacitron-t2-c50",
+                "CoQui_neutral" => "--model_name tts_models/en/ljspeech/speedy-speech",
+                _ => "--model_name tts_models/en/ljspeech/tacotron2-DDC" // Default
+            };
+            
             return Process.Start(new ProcessStartInfo
             {
-                FileName = ConfigurationManager.AppSettings.Get("coquitts"),
-                Arguments = $"--text \"{cleanmsg}\" --out_path \"{path}\"",
+                FileName = ConfigurationManager.AppSettings.Get("coquitts") ?? "tts", // Use tts.exe as fallback
+                Arguments = $"{modelArgs} --text \"{cleanmsg}\" --out_path \"{path}\"",
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
+                RedirectStandardError = true
             });
         }
         private async Task SendAsync(ulong guildId, string msg, string voice = "Microsoft David Desktop", string user = "", int rate = 0, RestClient restClient = null)
@@ -205,7 +223,7 @@ namespace DiscordBotTTS
             {
                 if (voice.StartsWith("CoQui"))
                 {
-                    using (var coquitts = CreateTTSFile(cleanmsg, out string coquittspath))
+                    using (var coquitts = CreateTTSFile(cleanmsg, voice, out string coquittspath))
                     {
                         await coquitts.WaitForExitAsync();
                         using (var ffmpeg = CreateStream(coquittspath))
@@ -303,21 +321,53 @@ namespace DiscordBotTTS
                 {
                     Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Disconnecting from voice channel: {voiceChannel?.Name}");
                     
-                    // Dispose the output stream first
-                    if (outputStream != null)
+                    // Wait for any pending operations to complete
+                    await sem.WaitAsync();
+                    
+                    // Use gateway client to properly disconnect from voice channel
+                    if (_gatewayClient != null)
                     {
-                        await outputStream.FlushAsync();
-                        outputStream.Dispose();
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Disconnecting from voice channel via gateway client...");
+                        try
+                        {
+                            // Use UpdateVoiceStateAsync with null channelId to disconnect
+                            await _gatewayClient.UpdateVoiceStateAsync(new VoiceStateProperties(guildId, null));
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Voice state updated to disconnect");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error updating voice state: {ex.Message}");
+                        }
                     }
                     
-                    // Dispose the voice client (it will automatically stop)
+                    // Dispose the voice client
                     if (voiceClient != null)
                     {
-                        voiceClient.Dispose();
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Disposing voice client...");
+                        try
+                        {
+                            voiceClient.Dispose();
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Voice client disposed successfully");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error disposing voice client: {ex.Message}");
+                        }
                     }
                     
-                    // Dispose the semaphore
-                    sem?.Dispose();
+                    // Dispose the output stream
+                    if (outputStream != null)
+                    {
+                        try
+                        {
+                            await outputStream.FlushAsync();
+                            outputStream.Dispose();
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error disposing output stream: {ex.Message}");
+                        }
+                    }
                     
                     Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Successfully disconnected from voice channel");
                     
@@ -331,13 +381,25 @@ namespace DiscordBotTTS
                     Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error leaving voice channel: {ex.Message}");
                     if (textChannel != null)
                     {
-                        await textChannel.SendMessageAsync(new MessageProperties { Content = "Issues leaving voice channel." });
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"Error leaving voice channel: {ex.Message}" });
                     }
                 }
                 finally
                 {
+                    // Always dispose the semaphore and remove from map
+                    sem?.Release();
+                    sem?.Dispose();
                     map.Remove(guildId, out _);
+                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Voice channel mapping removed for guild {guildId}");
                 }
+            }
+            else
+            {
+                if (textChannel != null)
+                {
+                    await textChannel.SendMessageAsync(new MessageProperties { Content = "Bot is not currently connected to any voice channel." });
+                }
+                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - No voice connection found for guild {guildId}");
             }
         }
 
@@ -473,18 +535,72 @@ namespace DiscordBotTTS
             }
         }
 
+        public async Task UnlinkChannel(ulong userId, TextChannel textChannel, string username)
+        {
+            if (userPrefsDict.TryRemove(userId, out var userPrefs))
+            {
+                // Also remove from steam ID mapping if it exists
+                if (userPrefs.SteamId != 0)
+                {
+                    steamIdtoDiscordId.TryRemove(userPrefs.SteamId, out _);
+                }
+                
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"{username} has been unlinked from Steam ID {userPrefs.SteamId}." });
+                Log($"User {username} ({userId}) unlinked from Steam ID {userPrefs.SteamId}");
+            }
+            else
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"{username} is not currently linked to any Steam account." });
+            }
+        }
+
+        public async Task VerifyLink(ulong userId, TextChannel textChannel, string username)
+        {
+            if (userPrefsDict.TryGetValue(userId, out var userPrefs))
+            {
+                var steamStatus = userPrefs.SteamId != 0 ? "Linked" : "Not linked";
+                var voiceInfo = !string.IsNullOrEmpty(userPrefs.Voice) ? userPrefs.Voice : "Default";
+                
+                await textChannel.SendMessageAsync(new MessageProperties
+                {
+                    Content = $"**Link Verification for {username}:**\n" +
+                             $"Discord ID: {userId}\n" +
+                             $"Steam ID: {userPrefs.SteamId} ({steamStatus})\n" +
+                             $"Voice: {voiceInfo}\n" +
+                             $"Rate: {userPrefs.Rate}\n" +
+                             $"Guild ID: {userPrefs.GuildId}"
+                });
+                
+                Log($"Link verification requested for user {username} ({userId})");
+            }
+            else
+            {
+                await textChannel.SendMessageAsync(new MessageProperties
+                {
+                    Content = $"{username} is not linked to any Steam account. Use `!tts link <steamid>` to link your account."
+                });
+            }
+        }
+
         public async Task Help(TextChannel channel)
         {
             await channel.SendMessageAsync(new MessageProperties
             {
-                Content = "\nHelp:\n" +
-                    "!tts link <steamid> [<channel> <voice> <rate>]\n" +
-                    "!tts join <channel>\n" +
-                    "!tts leave <channel>\n" +
-                    "!tts changevoice <voice>\n" +
-                    "!tts changerate <-10 .. 10> where 10 is fastest\n" +
-                    "!tts changeserver\n" +
-                    "Or use @botname tts <command>"
+                Content = "**TTS Bot Help:**\n" +
+                    "`!tts link <steamid> [voice] [rate]` - Link Steam account to Discord\n" +
+                    "`!tts unlink` - Unlink Steam account\n" +
+                    "`!tts verify` - Check current link status\n" +
+                    "`!tts join [channel_id]` - Join voice channel (auto-detects if no ID provided)\n" +
+                    "`!tts leave` - Leave voice channel\n" +
+                    "`!tts changevoice <voice>` - Change TTS voice\n" +
+                    "`!tts changerate <-10 to 10>` - Change speech rate (10 is fastest)\n" +
+                    "`!tts changeserver` - Change server\n" +
+                    "`!tts voices` - List all available voices\n" +
+                    "`!tts help` - Show this help\n\n" +
+                    "**Available Voice Types:**\n" +
+                    "• System voices (e.g., Microsoft David Desktop)\n" +
+                    "• Coqui TTS voices (CoQui_female_1, CoQui_male_1, etc.)\n\n" +
+                    "Slash commands (/) are also supported!"
             });
         }
 
@@ -560,13 +676,34 @@ namespace DiscordBotTTS
         }
 
         static List<string> voices = new List<string>();
+        static List<string> coquiVoices = new List<string>()
+        {
+            "CoQui_female_1",
+            "CoQui_female_2",
+            "CoQui_male_1",
+            "CoQui_male_2",
+            "CoQui_neutral"
+        };
+        
         public string CheckVoice(string voice)
         {
             voice = voice.Trim();
-            if (voice == "CoQui")
+            
+            // Check for Coqui TTS voices - any voice starting with "CoQui" prefix
+            if (voice.StartsWith("CoQui", StringComparison.OrdinalIgnoreCase))
             {
-                return "CoQui";
+                // Allow generic "CoQui" for default
+                if (voice.Equals("CoQui", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "CoQui_female_1";  // Default Coqui voice
+                }
+                
+                // For any CoQui prefixed voice, just return it as-is to allow flexibility
+                // The actual model selection will be handled in CreateTTSFile
+                return voice;
             }
+            
+            // Check for System.Speech voices
             if (voices.Count == 0)
             {
                 var synth = new SpeechSynthesizer();
@@ -589,6 +726,28 @@ namespace DiscordBotTTS
             {
                 return "";
             }
+        }
+        
+        public async Task ListVoices(TextChannel channel)
+        {
+            // Get System.Speech voices
+            if (voices.Count == 0)
+            {
+                var synth = new SpeechSynthesizer();
+                voices = synth.GetInstalledVoices().Select(x => x.VoiceInfo.Name).ToList<string>();
+                synth.Dispose();
+            }
+            
+            var systemVoices = string.Join("\n", voices.Select(v => $"• {v}"));
+            var coquiVoiceList = string.Join("\n", coquiVoices.Select(v => $"• {v}"));
+            
+            await channel.SendMessageAsync(new MessageProperties
+            {
+                Content = $"**Available TTS Voices:**\n\n" +
+                         $"**System Voices:**\n{systemVoices}\n\n" +
+                         $"**Coqui TTS Voices:**\n{coquiVoiceList}\n\n" +
+                         $"Use `!tts changevoice <voice_name>` to change your voice."
+            });
         }
     }
 

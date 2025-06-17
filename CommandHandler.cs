@@ -134,7 +134,6 @@ namespace DiscordBotTTS
                     case "leave":
                         Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS leave command");
                         await _ttsModule.LeaveChannel(null, textChannel, guildId);
-                        await textChannel.SendMessageAsync(new MessageProperties { Content = "Left voice channel" });
                         break;
 
                     case "link":
@@ -149,6 +148,16 @@ namespace DiscordBotTTS
                         {
                             await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts link <steamid> [voice] [rate]" });
                         }
+                        break;
+
+                    case "unlink":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS unlink command");
+                        await _ttsModule.UnlinkChannel(userId, textChannel, username);
+                        break;
+
+                    case "verify":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS verify command");
+                        await _ttsModule.VerifyLink(userId, textChannel, username);
                         break;
 
                     case "changevoice":
@@ -179,6 +188,11 @@ namespace DiscordBotTTS
                     case "changeserver":
                         Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS changeserver command");
                         await _ttsModule.ChangeServer(userId, guildId, textChannel, username);
+                        break;
+
+                    case "voices":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS voices command");
+                        await _ttsModule.ListVoices(textChannel);
                         break;
 
                     case "help":
