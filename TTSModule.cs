@@ -118,32 +118,55 @@ namespace DiscordBotTTS
                 Log("Initializing Coqui TTS server at startup...");
                 await EnsureCoquiServerStarted();
                 
-                // Wait a bit longer for the server to fully initialize
-                await Task.Delay(5000);
-                
-                // Test the server connection
-                try
-                {
-                    var port = ConfigurationManager.AppSettings.Get("coqui_server_port") ?? "5002";
-                    var response = await _httpClient.GetAsync($"http://localhost:{port}/");
-                    if (response.IsSuccessStatusCode)
-                    {
-                        Log("Coqui TTS server initialization completed successfully");
-                    }
-                    else
-                    {
-                        Log($"Coqui TTS server responded with status: {response.StatusCode}", "Warning");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log($"Could not connect to Coqui TTS server: {ex.Message}", "Warning");
-                }
+                // Wait for server to be ready with retry mechanism
+                await WaitForServerReady();
             }
             else
             {
                 Log("Coqui TTS server mode disabled - using exe mode");
             }
+        }
+        
+        // Wait for Coqui TTS server to be ready with retry mechanism
+        private static async Task WaitForServerReady()
+        {
+            var port = ConfigurationManager.AppSettings.Get("coqui_server_port") ?? "5002";
+            var startupTimeout = int.Parse(ConfigurationManager.AppSettings.Get("coqui_server_startup_timeout") ?? "60");
+            var retryInterval = int.Parse(ConfigurationManager.AppSettings.Get("coqui_server_retry_interval") ?? "2");
+            
+            var maxRetries = startupTimeout / retryInterval;
+            var attempt = 0;
+            
+            Log($"Waiting for Coqui TTS server to be ready (timeout: {startupTimeout}s, retry interval: {retryInterval}s)...");
+            
+            while (attempt < maxRetries)
+            {
+                try
+                {
+                    var response = await _httpClient.GetAsync($"http://localhost:{port}/");
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Log($"Coqui TTS server is ready! (took {attempt * retryInterval}s)");
+                        return;
+                    }
+                    else
+                    {
+                        Log($"Server responded with status: {response.StatusCode}, retrying in {retryInterval}s... (attempt {attempt + 1}/{maxRetries})");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"Server not ready yet: {ex.Message}, retrying in {retryInterval}s... (attempt {attempt + 1}/{maxRetries})");
+                }
+                
+                attempt++;
+                if (attempt < maxRetries)
+                {
+                    await Task.Delay(retryInterval * 1000);
+                }
+            }
+            
+            Log($"Coqui TTS server did not become ready within {startupTimeout}s timeout", "Warning");
         }
         
         // Cleanup Coqui TTS server on application exit
@@ -438,22 +461,26 @@ namespace DiscordBotTTS
                 var timeout = int.Parse(ConfigurationManager.AppSettings.Get("coqui_server_timeout") ?? "30");
                 
                 // Get speaker name from voice mapping
-                string speakerName = "default";
+                string speakerName = null;
                 if (coquiVoiceModels.TryGetValue(voice, out var configuredSpeaker))
                 {
                     speakerName = configuredSpeaker;
                 }
                 
-                var requestData = new
+                // Coqui TTS server API expects form POST data
+                var formData = new List<KeyValuePair<string, string>>
                 {
-                    text = cleanmsg,
-                    speaker_id = speakerName
+                    new KeyValuePair<string, string>("text", cleanmsg)
                 };
                 
-                var json = System.Text.Json.JsonSerializer.Serialize(requestData);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                if (!string.IsNullOrEmpty(speakerName))
+                {
+                    formData.Add(new KeyValuePair<string, string>("speaker_idx", speakerName));
+                }
                 
-                Log($"Calling Coqui TTS server API: text='{cleanmsg}', speaker='{speakerName}'");
+                var content = new FormUrlEncodedContent(formData);
+                
+                Log($"Calling Coqui TTS server API: text='{cleanmsg}', speaker_idx='{speakerName}'");
                 
                 var response = await _httpClient.PostAsync($"http://localhost:{port}/api/tts", content);
                 
