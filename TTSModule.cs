@@ -67,20 +67,16 @@ namespace DiscordBotTTS
                     
                     if (coquiMode == "server")
                     {
-                        // Load speakers for server mode
-                        var speakersConfig = ConfigurationManager.AppSettings.Get("CoquiSpeakers");
-                        if (!string.IsNullOrEmpty(speakersConfig))
+                        // Discover speakers dynamically for server mode
+                        var discoveredSpeakers = Task.Run(async () => await DiscoverCoquiSpeakers()).Result;
+                        
+                        foreach (var speaker in discoveredSpeakers)
                         {
-                            var speakers = speakersConfig.Split(',');
-                            foreach (var speaker in speakers)
-                            {
-                                var speakerName = speaker.Trim();
-                                // For server mode, we'll use speaker names instead of model names
-                                coquiVoiceModels[$"CoQui_{speakerName}"] = speakerName;
-                            }
+                            // For server mode, we'll use speaker names/indices
+                            coquiVoiceModels[$"CoQui_{speaker}"] = speaker;
                         }
                         
-                        Log($"Loaded {coquiVoiceModels.Count} Coqui speakers for server mode");
+                        Log($"Loaded {coquiVoiceModels.Count} Coqui speakers for server mode (discovered)");
                     }
                     else
                     {
@@ -120,11 +116,107 @@ namespace DiscordBotTTS
                 
                 // Wait for server to be ready with retry mechanism
                 await WaitForServerReady();
+                
+                // Load voice configuration after server is ready
+                LoadCoquiVoiceConfiguration();
             }
             else
             {
                 Log("Coqui TTS server mode disabled - using exe mode");
             }
+        }
+        
+        // Discover available speakers for the loaded model
+        private static async Task<List<string>> DiscoverCoquiSpeakers()
+        {
+            var speakers = new List<string>();
+            
+            try
+            {
+                var coquiPath = ConfigurationManager.AppSettings.Get("coquitts") ?? "tts";
+                var model = ConfigurationManager.AppSettings.Get("coqui_server_model") ?? "tts_models/en/ljspeech/tacotron2-DDC";
+                
+                Log($"Discovering speakers for model: {model}");
+                
+                var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = coquiPath,
+                        Arguments = $"--model_name {model} --list_speaker_idx",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                
+                process.Start();
+                var output = await process.StandardOutput.ReadToEndAsync();
+                var error = await process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                
+                if (!string.IsNullOrEmpty(error))
+                {
+                    Log($"Speaker discovery stderr: {error}", "Warning");
+                    
+                    // Extract speaker list from stderr (due to logging issue)
+                    var match = System.Text.RegularExpressions.Regex.Match(error, @"Message: \[([^\]]+)\]");
+                    if (match.Success)
+                    {
+                        var speakerListText = match.Groups[1].Value;
+                        var speakerMatches = System.Text.RegularExpressions.Regex.Matches(speakerListText, @"'([^']+)'");
+                        
+                        foreach (System.Text.RegularExpressions.Match speakerMatch in speakerMatches)
+                        {
+                            var speakerName = speakerMatch.Groups[1].Value;
+                            if (!string.IsNullOrEmpty(speakerName))
+                            {
+                                speakers.Add(speakerName);
+                            }
+                        }
+                    }
+                }
+                
+                if (!string.IsNullOrEmpty(output))
+                {
+                    Log($"Speaker discovery output: {output}");
+                    
+                    // Parse speaker list from output (fallback)
+                    var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var line in lines)
+                    {
+                        var trimmed = line.Trim();
+                        if (!string.IsNullOrEmpty(trimmed) &&
+                            !trimmed.Contains("INFO") &&
+                            !trimmed.Contains("WARNING") &&
+                            !trimmed.Contains("ERROR") &&
+                            !trimmed.Contains("Loading") &&
+                            !trimmed.Contains("Setting up") &&
+                            !trimmed.Contains("downloaded") &&
+                            !trimmed.Contains("Using model"))
+                        {
+                            speakers.Add(trimmed);
+                        }
+                    }
+                }
+                
+                Log($"Discovered {speakers.Count} speakers: {string.Join(", ", speakers)}");
+            }
+            catch (Exception ex)
+            {
+                Log($"Error discovering speakers: {ex.Message}", "Warning");
+                
+                // Fallback to config if discovery fails
+                var fallbackConfig = ConfigurationManager.AppSettings.Get("CoquiSpeakers");
+                if (!string.IsNullOrEmpty(fallbackConfig))
+                {
+                    speakers.AddRange(fallbackConfig.Split(',').Select(s => s.Trim()));
+                    Log($"Using fallback speakers from config: {string.Join(", ", speakers)}");
+                }
+            }
+            
+            return speakers;
         }
         
         // Wait for Coqui TTS server to be ready with retry mechanism
@@ -470,17 +562,23 @@ namespace DiscordBotTTS
                 // Coqui TTS server API expects form POST data
                 var formData = new List<KeyValuePair<string, string>>
                 {
-                    new KeyValuePair<string, string>("text", cleanmsg)
+                    new KeyValuePair<string, string>("text", cleanmsg),
+                    new KeyValuePair<string, string>("language_id", "en")  // Default to English
                 };
                 
                 if (!string.IsNullOrEmpty(speakerName))
                 {
-                    formData.Add(new KeyValuePair<string, string>("speaker_idx", speakerName));
+                    formData.Add(new KeyValuePair<string, string>("speaker_id", speakerName));
+                    Log($"Using speaker: '{speakerName}' for voice: '{voice}'");
+                }
+                else
+                {
+                    Log($"No speaker mapping found for voice: '{voice}', using default");
                 }
                 
                 var content = new FormUrlEncodedContent(formData);
                 
-                Log($"Calling Coqui TTS server API: text='{cleanmsg}', speaker_idx='{speakerName}'");
+                Log($"Calling Coqui TTS server API: text='{cleanmsg}', speaker_id='{speakerName}'");
                 
                 var response = await _httpClient.PostAsync($"http://localhost:{port}/api/tts", content);
                 
