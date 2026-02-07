@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <AssemblyName />
     <Platforms>x64</Platforms>
     <PublishSingleFile>true</PublishSingleFile>
@@ -20,12 +20,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Netcord" Version="1.0.0-alpha.386" />
-    <PackageReference Include="Netcord.Services" Version="1.0.0-alpha.386" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="SteamKit2" Version="3.3.0" />
-    <PackageReference Include="System.Configuration.ConfigurationManager" Version="9.0.6" />
-    <PackageReference Include="System.Speech" Version="9.0.6" />
+    <PackageReference Include="Netcord" Version="1.0.0-alpha.460" />
+    <PackageReference Include="Netcord.Services" Version="1.0.0-alpha.460" />
+    <PackageReference Include="SteamKit2" Version="3.4.0" />
+    <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.2" />
+    <PackageReference Include="System.Speech" Version="10.0.2" />
   </ItemGroup>
 
 </Project>

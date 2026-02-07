@@ -1,6 +1,5 @@
 ﻿using NetCord.Gateway;
 using NetCord.Rest;
-using System.Reflection;
 using System.Threading.Tasks;
 using System.Linq;
 using NetCord;
@@ -153,6 +152,11 @@ namespace DiscordBotTTS
                     case "voices":
                         Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS voices command");
                         await _ttsModule.ListVoices(textChannel);
+                        break;
+
+                    case "say":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS say command");
+                        await HandleSayCommandAsync(args, textChannel, guildId, userId, username);
                         break;
 
                     case "help":
@@ -324,6 +328,19 @@ namespace DiscordBotTTS
             else
             {
                 await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts changerate <-10 to 10>" });
+            }
+        }
+
+        private async Task HandleSayCommandAsync(string[] args, TextChannel textChannel, ulong guildId, ulong userId, string username)
+        {
+            if (args != null && args.Length > 2)
+            {
+                var message = string.Join(" ", args.Skip(2));
+                await _ttsModule.SayTTS(message, userId, guildId, textChannel, username);
+            }
+            else
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts say <message>" });
             }
         }
     }

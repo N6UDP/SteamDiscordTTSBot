@@ -2,14 +2,26 @@
 
 This works if you are me or have a fair bit of know-how.
 
-## Dependencies
+## Requirements
 
-For the software itself just download opus.dll and libsodium.dll as per the docs [here](https://github.com/discord-net/Discord.Net/blob/1b64d19c845cb7c612a1c52288c8b44cff605105/docs/guides/voice/sending-voice.md)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (Windows, x64)
+- A Discord bot account with a valid token
+- A Steam account for message bridging
+- ffmpeg (for Coqui TTS audio conversion, optional)
 
-For running it you need to rename `App.config.example` to `App.config` and edit the values within which will require:
+## Setup
 
-* Having a steam account you'd like to use as a message reciever (bot-ish, it never sends messages) (I have not read their terms of service, but it may be against them, use at your own risk etc etc).
-* Having a discord bot account you'd like to use
+1. Rename `App.config.example` to `App.config`
+2. Edit the values within:
+   - `BotToken` — your Discord bot token
+   - `SteamUser` / `SteamPass` — Steam credentials (required for Steam→Discord TTS bridge)
+   - TTS engine settings (optional, for Coqui TTS)
+3. Build and run:
+
+```powershell
+dotnet build
+dotnet run
+```
 
 ## Usage
 
@@ -24,6 +36,7 @@ For running it you need to rename `App.config.example` to `App.config` and edit 
 * `!tts changerate <-10 to 10>` - Change speech rate (10 is fastest)
 * `!tts changeserver` - Change server
 * `!tts voices` - List all available voices
+* `!tts say <message>` - Speak a message via TTS (Discord-native, no Steam needed)
 * `!tts help` - Show help
 
 ### Slash Commands

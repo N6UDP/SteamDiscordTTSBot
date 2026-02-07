@@ -5,21 +5,17 @@ using NetCord.Rest;
 using System;
 using System.Threading.Tasks;
 using System.Speech.Synthesis;
-using System.IO;
 using System.Speech.AudioFormat;
+using System.IO;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Configuration;
 using System.Threading;
 using System.Linq;
 using System.Text.Json;
-using Newtonsoft.Json;
-using static DiscordBotTTS.TTSModule;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
-using SteamKit2.CDN;
 using System.Net.Http;
-using System.Text;
 
 namespace DiscordBotTTS
 {
@@ -161,13 +157,13 @@ namespace DiscordBotTTS
                     Log($"Speaker discovery stderr: {error}", "Warning");
                     
                     // Extract speaker list from stderr (due to logging issue)
-                    var match = System.Text.RegularExpressions.Regex.Match(error, @"Message: \[([^\]]+)\]");
+                    var match = Regex.Match(error, @"Message: \[([^\]]+)\]");
                     if (match.Success)
                     {
                         var speakerListText = match.Groups[1].Value;
-                        var speakerMatches = System.Text.RegularExpressions.Regex.Matches(speakerListText, @"'([^']+)'");
+                        var speakerMatches = Regex.Matches(speakerListText, @"'([^']+)'");
                         
-                        foreach (System.Text.RegularExpressions.Match speakerMatch in speakerMatches)
+                        foreach (Match speakerMatch in speakerMatches)
                         {
                             var speakerName = speakerMatch.Groups[1].Value;
                             if (!string.IsNullOrEmpty(speakerName))
@@ -452,10 +448,22 @@ namespace DiscordBotTTS
             {
                 try
                 {
-                    var userdict = JsonConvert.DeserializeObject<ConcurrentDictionary<ulong, UserPrefs>>(File.ReadAllText("userprefs.json"));
-                    foreach (var u in userdict)
+                    var fileContent = File.ReadAllText("userprefs.json");
+                    if (!string.IsNullOrWhiteSpace(fileContent) && fileContent != "{}")
                     {
-                        userPrefsDict[u.Key] = u.Value;
+                        var userdict = JsonSerializer.Deserialize<Dictionary<ulong, UserPrefs>>(fileContent);
+                        if (userdict != null)
+                        {
+                            foreach (var u in userdict)
+                            {
+                                userPrefsDict[u.Key] = u.Value;
+                            }
+                            Log($"Loaded {userdict.Count} user preferences from userprefs.json");
+                        }
+                    }
+                    else
+                    {
+                        Log("userprefs.json is empty or contains no data, skipping load", "Warning");
                     }
                 }
                 catch
@@ -465,10 +473,22 @@ namespace DiscordBotTTS
 
                 try
                 {
-                    var steamdict = JsonConvert.DeserializeObject<ConcurrentDictionary<ulong, ulong>>(File.ReadAllText("steamid.json"));
-                    foreach (var s in steamdict)
+                    var fileContent = File.ReadAllText("steamid.json");
+                    if (!string.IsNullOrWhiteSpace(fileContent) && fileContent != "{}")
                     {
-                        steamIdtoDiscordId[s.Key] = s.Value;
+                        var steamdict = JsonSerializer.Deserialize<Dictionary<ulong, ulong>>(fileContent);
+                        if (steamdict != null)
+                        {
+                            foreach (var s in steamdict)
+                            {
+                                steamIdtoDiscordId[s.Key] = s.Value;
+                            }
+                            Log($"Loaded {steamdict.Count} Steam ID mappings from steamid.json");
+                        }
+                    }
+                    else
+                    {
+                        Log("steamid.json is empty or contains no data, skipping load", "Warning");
                     }
                 }
                 catch
@@ -668,7 +688,7 @@ namespace DiscordBotTTS
                         {
                             Log("Failed to set voice and rate", "Warning");
                         }
-                        synth.SetOutputToAudioStream(_ms, new System.Speech.AudioFormat.SpeechAudioFormatInfo(EncodingFormat.Pcm, 48000, 16, 2, 1536000, 2, null));
+                        synth.SetOutputToAudioStream(_ms, new SpeechAudioFormatInfo(EncodingFormat.Pcm, 48000, 16, 2, 1536000, 2, null));
                         synth.Speak(cleanmsg);
                         synth.SetOutputToNull();
                     }
@@ -1010,6 +1030,7 @@ namespace DiscordBotTTS
                     "`!tts verify` - Check current link status\n" +
                     "`!tts join [channel_id]` - Join voice channel (auto-detects if no ID provided)\n" +
                     "`!tts leave` - Leave voice channel\n" +
+                    "`!tts say <message>` - Send a TTS message directly from Discord\n" +
                     "`!tts changevoice <voice>` - Change TTS voice\n" +
                     "`!tts changerate <-10 to 10>` - Change speech rate (10 is fastest)\n" +
                     "`!tts changeserver` - Change server\n" +
@@ -1020,6 +1041,29 @@ namespace DiscordBotTTS
                     "• Coqui TTS voices (CoQui_female_1, CoQui_male_1, etc.)\n\n" +
                     "Slash commands (/) are also supported!"
             });
+        }
+
+        public async Task SayTTS(string message, ulong userId, ulong guildId, TextChannel textChannel, string username)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: `!tts say <message>` or `/say <message>`" });
+                return;
+            }
+
+            if (!map.ContainsKey(guildId))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Bot is not connected to a voice channel. Use `!tts join` first." });
+                return;
+            }
+
+            // Look up user preferences for voice and rate; fall back to defaults
+            var userPrefs = userPrefsDict.GetValueOrDefault(userId, null);
+            var voice = userPrefs?.Voice ?? "Microsoft David Desktop";
+            var rate = userPrefs?.Rate ?? 0;
+
+            Log($"SayTTS from {username}: voice={voice}, rate={rate}, msg={message}");
+            await SendAsync(guildId, message, voice, username, rate, _restClient);
         }
 
         public async Task Dequeuer()
@@ -1040,12 +1084,36 @@ namespace DiscordBotTTS
 
         public void WriteAllTextAtomicWithBackup(string path, string data)
         {
+            // Guard: never write empty or whitespace-only data
+            if (string.IsNullOrWhiteSpace(data))
+            {
+                Log($"Refusing to write empty data to {path}", "Warning");
+                return;
+            }
+
+            // Guard: never write empty JSON objects/arrays for files that should have content
+            if (data == "{}" || data == "[]")
+            {
+                Log($"Refusing to write empty JSON ({data}) to {path}", "Warning");
+                return;
+            }
+
             File.WriteAllText(path + ".tmp", data);
             if (File.Exists(path))
             {
-                File.Move(path, path + ".bak", true);
+                // Use timestamped backup so we never lose history
+                var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+                var backupPath = $"{path}.{timestamp}.bak";
+                try
+                {
+                    File.Copy(path, backupPath, true);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Failed to create timestamped backup {backupPath}: {ex.Message}", "Warning");
+                }
             }
-            File.Move(path + ".tmp", path);
+            File.Move(path + ".tmp", path, true);
         }
 
         public async Task Saver()
@@ -1055,16 +1123,29 @@ namespace DiscordBotTTS
 
             while (true)
             {
-                var userprefs = JsonConvert.SerializeObject(userPrefsDict);
-                var steamid = JsonConvert.SerializeObject(steamIdtoDiscordId);
+                try
+                {
+                    // Take a snapshot of the dictionaries to avoid race conditions during serialization
+                    var userPrefsSnapshot = new Dictionary<ulong, UserPrefs>(userPrefsDict);
+                    var steamIdSnapshot = new Dictionary<ulong, ulong>(steamIdtoDiscordId);
 
-                if (userprefs != prevuserprefs)
-                {
-                    WriteAllTextAtomicWithBackup("userprefs.json", userprefs);
+                    var userprefs = JsonSerializer.Serialize(userPrefsSnapshot);
+                    var steamid = JsonSerializer.Serialize(steamIdSnapshot);
+
+                    if (userprefs != prevuserprefs)
+                    {
+                        WriteAllTextAtomicWithBackup("userprefs.json", userprefs);
+                        prevuserprefs = userprefs;
+                    }
+                    if (steamid != prevsteamid)
+                    {
+                        WriteAllTextAtomicWithBackup("steamid.json", steamid);
+                        prevsteamid = steamid;
+                    }
                 }
-                if (steamid != prevsteamid)
+                catch (Exception ex)
                 {
-                    WriteAllTextAtomicWithBackup("steamid.json", steamid);
+                    Log($"Error in Saver: {ex.Message}", "Error");
                 }
                 await Task.Delay(1000 * 10);
             }

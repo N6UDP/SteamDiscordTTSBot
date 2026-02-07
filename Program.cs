@@ -2,13 +2,8 @@
 using NetCord.Gateway;
 using NetCord.Rest;
 using System;
-using System.Diagnostics;
 using System.Threading.Tasks;
-using System.Speech;
-using System.Collections;
 using System.Configuration;
-using System.Collections.Specialized;
-using SteamKit2;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -139,7 +134,11 @@ namespace DiscordBotTTS
                 {
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.Integer, "rate", "Speech rate (-10 to 10)") { Required = true }
                 })},
-                {"changeserver", ("Change server", new List<ApplicationCommandOptionProperties>())}
+                {"changeserver", ("Change server", new List<ApplicationCommandOptionProperties>())},
+                {"say", ("Send a TTS message directly from Discord", new List<ApplicationCommandOptionProperties>
+                {
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "message", "The message to speak") { Required = true }
+                })}
             };
             
             List<SlashCommandProperties> builtCommands = new List<SlashCommandProperties>();
@@ -275,6 +274,18 @@ namespace DiscordBotTTS
                     case "leave":
                     case "changeserver":
                         await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username);
+                        break;
+                    case "say":
+                        var sayMessage = command.Data.Options?.FirstOrDefault(o => o.Name == "message")?.Value?.ToString();
+                        if (sayMessage != null)
+                        {
+                            string[] args = { "tts", "say", sayMessage };
+                            await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username, args);
+                        }
+                        else
+                        {
+                            await textChannel.SendMessageAsync(new MessageProperties { Content = "Message is required." });
+                        }
                         break;
                     default:
                         await textChannel.SendMessageAsync(new MessageProperties { Content = $"Unknown command: {commandName}" });
