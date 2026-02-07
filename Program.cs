@@ -26,6 +26,7 @@ namespace DiscordBotTTS
                 Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Ctrl+C received, shutting down gracefully...");
                 e.Cancel = true; // Prevent immediate termination
                 TTSModule.CleanupCoquiServer();
+                TTSModule.CleanupPocketTTSServer();
                 Environment.Exit(0);
             };
             
@@ -33,6 +34,7 @@ namespace DiscordBotTTS
             {
                 Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Application exiting, cleaning up...");
                 TTSModule.CleanupCoquiServer();
+                TTSModule.CleanupPocketTTSServer();
             };
             
             try
@@ -82,7 +84,11 @@ namespace DiscordBotTTS
                 await _ch.InstallCommandsAsync();
 
                 // Start Coqui TTS server if configured for server mode
+                TTSModule.LoadEngineSwitch();
                 await TTSModule.InitializeCoquiServerAsync();
+
+                // Start PocketTTS server if enabled
+                await TTSModule.InitializePocketTTSServerAsync();
 
                 Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Starting NetCord client...");
                 await _client.StartAsync();
@@ -138,7 +144,22 @@ namespace DiscordBotTTS
                 {"say", ("Send a TTS message directly from Discord", new List<ApplicationCommandOptionProperties>
                 {
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "message", "The message to speak") { Required = true }
-                })}
+                })},
+                {"uploadvoice", ("Upload a custom PocketTTS voice (.wav file)", new List<ApplicationCommandOptionProperties>
+                {
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "name", "Name for the custom voice") { Required = true },
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.Attachment, "file", "A .wav voice sample file") { Required = true }
+                })},
+                {"renamevoice", ("Rename a custom PocketTTS voice", new List<ApplicationCommandOptionProperties>
+                {
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "oldname", "Current voice name") { Required = true },
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "newname", "New voice name") { Required = true }
+                })},
+                {"deletevoice", ("Delete a custom PocketTTS voice", new List<ApplicationCommandOptionProperties>
+                {
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "name", "Voice name to delete") { Required = true }
+                })},
+                {"customvoices", ("List all custom PocketTTS voices", new List<ApplicationCommandOptionProperties>())}
             };
             
             List<SlashCommandProperties> builtCommands = new List<SlashCommandProperties>();
@@ -273,6 +294,7 @@ namespace DiscordBotTTS
                     case "verify":
                     case "leave":
                     case "changeserver":
+                    case "customvoices":
                         await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username);
                         break;
                     case "say":
@@ -285,6 +307,55 @@ namespace DiscordBotTTS
                         else
                         {
                             await textChannel.SendMessageAsync(new MessageProperties { Content = "Message is required." });
+                        }
+                        break;
+                    case "uploadvoice":
+                        var voiceName = command.Data.Options?.FirstOrDefault(o => o.Name == "name")?.Value?.ToString();
+                        var fileAttachmentId = command.Data.Options?.FirstOrDefault(o => o.Name == "file")?.Value?.ToString();
+                        string uploadUrl = null;
+                        string uploadFileName = null;
+                        if (fileAttachmentId != null && command.Data.ResolvedData?.Attachments != null)
+                        {
+                            if (ulong.TryParse(fileAttachmentId, out ulong attId) && command.Data.ResolvedData.Attachments.TryGetValue(attId, out var resolvedAtt))
+                            {
+                                uploadUrl = resolvedAtt.Url;
+                                uploadFileName = resolvedAtt.FileName;
+                            }
+                        }
+                        if (voiceName != null)
+                        {
+                            string[] args = { "tts", "uploadvoice", voiceName };
+                            await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username, args,
+                                attachmentUrl: uploadUrl, attachmentFileName: uploadFileName);
+                        }
+                        else
+                        {
+                            await textChannel.SendMessageAsync(new MessageProperties { Content = "Voice name is required." });
+                        }
+                        break;
+                    case "renamevoice":
+                        var oldName = command.Data.Options?.FirstOrDefault(o => o.Name == "oldname")?.Value?.ToString();
+                        var newName = command.Data.Options?.FirstOrDefault(o => o.Name == "newname")?.Value?.ToString();
+                        if (oldName != null && newName != null)
+                        {
+                            string[] args = { "tts", "renamevoice", oldName, newName };
+                            await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username, args);
+                        }
+                        else
+                        {
+                            await textChannel.SendMessageAsync(new MessageProperties { Content = "Both old and new voice names are required." });
+                        }
+                        break;
+                    case "deletevoice":
+                        var deleteVoiceName = command.Data.Options?.FirstOrDefault(o => o.Name == "name")?.Value?.ToString();
+                        if (deleteVoiceName != null)
+                        {
+                            string[] args = { "tts", "deletevoice", deleteVoiceName };
+                            await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username, args);
+                        }
+                        else
+                        {
+                            await textChannel.SendMessageAsync(new MessageProperties { Content = "Voice name is required." });
                         }
                         break;
                     default:

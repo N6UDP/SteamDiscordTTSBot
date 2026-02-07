@@ -19,9 +19,9 @@ This directory contains a shared memory bank system for AI assistants (GitHub Co
 ## Key Technologies
 - **Discord Framework**: NetCord (v1.0.0-alpha.460) — gateway, REST, voice
 - **Steam Integration**: SteamKit2 (v3.4.0) — login, friends, message receiving
-- **TTS Engines**: System.Speech (Windows SAPI) + Coqui TTS (exe or server mode)
+- **TTS Engines**: System.Speech (Windows SAPI) + Coqui TTS (exe or server mode) + PocketTTS (Kyutai Labs, server mode)
 - **Config**: System.Configuration.ConfigurationManager with `App.config` XML
-- **Serialization**: System.Text.Json (built-in) for user preferences
+- **Serialization**: System.Text.Json (built-in) for user preferences and voice mappings
 - **Target Framework**: net10.0-windows
 
 ## Project Structure
@@ -29,12 +29,13 @@ This directory contains a shared memory bank system for AI assistants (GitHub Co
 DiscordBotTTS/
 ├── Program.cs              # Entry point, gateway client, slash command registration & routing
 ├── CommandHandler.cs       # ! prefix message command parsing, routes to TTSModule
-├── TTSModule.cs            # Core TTS: voice management, speech synthesis, Coqui TTS, user prefs, Steam dequeue
+├── TTSModule.cs            # Core TTS: voice management, speech synthesis, Coqui TTS, PocketTTS, user prefs, Steam dequeue
 ├── InfoModule.cs           # Simple info/echo commands (!say)
 ├── Steam.cs               # SteamKit2: login, friends list, message receiving → Queue
 ├── App.config             # Configuration (bot token, steam creds, TTS settings) — SECRETS, never commit
 ├── App.config.example     # Template config without secrets
 ├── userprefs.json         # Persisted user preferences (voice, rate, Steam ID, guild)
+├── pocketvoices.json      # Persisted custom PocketTTS voice mappings (name → file path)
 ├── steamid.json           # Persisted Steam ID → Discord ID mapping
 ├── DiscordBotTTS.csproj   # Project file (.NET 10, x64, self-contained publish)
 ├── .github/
@@ -95,6 +96,11 @@ LeaveChannel():
 ```
 
 ### TTS Engine Routing
+- Engine switches: `EnableSystemSpeech`, `EnableCoquiTTS`, `EnablePocketTTS` (each can be toggled independently)
+- Voice name starts with `Pocket` → PocketTTS engine (server mode HTTP API)
+  - Predefined voices: alba, marius, javert, jean, fantine, cosette, eponine, azelma (sent as `voice_url`)
+  - Custom `.wav` voices uploaded by users (sent as `voice_wav` file upload)
+  - Custom `.safetensors` voices from `PocketTTS_VoiceDirectory` (sent as `voice_url` path)
 - Voice name starts with `CoQui` → Coqui TTS engine
   - `CoquiMode=exe` → spawn tts.exe per request with model args
   - `CoquiMode=server` → HTTP POST to persistent tts-server API
@@ -104,6 +110,7 @@ LeaveChannel():
 ### Data Persistence
 - `userprefs.json`: ConcurrentDictionary<ulong, UserPrefs> (Discord ID → prefs)
 - `steamid.json`: ConcurrentDictionary<ulong, ulong> (Steam ID → Discord ID)
+- `pocketvoices.json`: Dictionary<string, string> (custom voice name → file path) — custom PocketTTS voices uploaded by users
 - Serialization: System.Text.Json (`JsonSerializer.Serialize/Deserialize`)
 - Atomic write: write .tmp → move current to timestamped `.bak` → move .tmp to current
 - Timestamped backups: `{path}.{yyyy-MM-dd_HH-mm-ss}.bak` (never overwrites previous backups)
@@ -118,6 +125,8 @@ LeaveChannel():
 ✅ **Steam Integration**: Connected and operational, auto-accepts friend requests  
 ✅ **Voice Channel**: Auto-detect user's channel or specify by ID  
 ✅ **Coqui TTS**: Server mode with speaker discovery and exe fallback  
+✅ **PocketTTS**: Server mode with predefined + custom voices, upload/rename/delete management  
+✅ **Engine Switches**: Each TTS engine can be independently enabled/disabled  
 ✅ **Error Handling**: Comprehensive logging, graceful shutdown, voice reconnection  
 ✅ **GHCP/Roo/Cline Support**: Shared instructions and memory bank for AI agents
 
@@ -134,6 +143,10 @@ LeaveChannel():
 | `!tts changeserver` | `/changeserver` | Change server/guild binding |
 | `!tts voices` | `/voices` | List available voices |
 | `!tts say <message>` | `/say` | Speak a message via TTS (Discord-native input) |
+| `!tts uploadvoice <name>` | `/uploadvoice` | Upload a custom PocketTTS voice (.wav attachment) |
+| `!tts renamevoice <old> <new>` | `/renamevoice` | Rename a custom PocketTTS voice |
+| `!tts deletevoice <name>` | `/deletevoice` | Delete a custom PocketTTS voice |
+| `!tts customvoices` | `/customvoices` | List all custom PocketTTS voices |
 | `!tts help` | `/help` | Show help |
 | `!say <message>` | — | Echo message |
 
@@ -164,6 +177,28 @@ LeaveChannel():
 | `coqui_server_default_language` | Default language code (en) |
 | `CoquiSpeakers` | Fallback speaker list (comma-separated) |
 
+### Engine Switches
+| Key | Description |
+|-----|-------------|
+| `EnableSystemSpeech` | Enable/disable System.Speech engine (default: true) |
+| `EnableCoquiTTS` | Enable/disable Coqui TTS engine (default: true) |
+| `EnablePocketTTS` | Enable/disable PocketTTS engine (default: true) |
+
+### PocketTTS Settings
+| Key | Description |
+|-----|-------------|
+| `PocketTTS_Executable` | Path to PocketTTS server executable (python script) |
+| `PocketTTS_ServerHost` | PocketTTS server host (default: 127.0.0.1) |
+| `PocketTTS_ServerPort` | PocketTTS server port (default: 5005) |
+| `PocketTTS_DefaultVoice` | Default PocketTTS voice name (default: alba) |
+| `PocketTTS_StartupTimeout` | Server startup timeout in seconds (default: 120) |
+| `PocketTTS_RetryInterval` | Retry interval in seconds for server readiness (default: 2) |
+| `PocketTTS_RequestTimeout` | HTTP request timeout in seconds (default: 60) |
+| `PocketTTS_VoiceDirectory` | Directory for .safetensors voice models |
+| `PocketTTS_VoiceUploadAllowlist` | Comma-separated Discord user IDs allowed to upload voices (empty = all) |
+| `PocketTTS_MaxUploadSizeMB` | Max upload size for voice files in MB (default: 25) |
+| `HuggingFace_Token` | HuggingFace API token (for gated models) |
+
 ## Build & Run
 ```powershell
 cd C:\Users\lburton\source\repos\DiscordBotTTS
@@ -173,7 +208,7 @@ dotnet run
 
 ## Important Conventions
 - Log format: `{DateTime.Now:yyyy-MM-dd HH:mm:ss}` or `{DateTime.Now:s}:Module:Level: message`
-- Voice prefix routing: `CoQui*` → Coqui TTS, else → System.Speech
+- Voice prefix routing: `Pocket*` → PocketTTS, `CoQui*` → Coqui TTS, no prefix → System.Speech
 - Speech rate: -10 to 10
 - Guild ID = primary key for voice connections
 - Bot auto-accepts all Steam friend requests
@@ -181,6 +216,8 @@ dotnet run
 - Config changes: update both `App.config` and `App.config.example`
 
 ## Recent Changes
+- **2025-07-17**: Added PocketTTS (Kyutai Labs) engine — server mode, predefined voices (alba, marius, etc.), custom .wav voice upload/rename/delete, `pocketvoices.json` persistence, engine enable/disable switches, slash command integration
+- **2025-07-17**: Added `.copilotignore` to hide `App.config` from AI agents (contains secrets)
 - **2025-07-16**: Migrated from Newtonsoft.Json to System.Text.Json (removed NuGet package, using built-in)
 - **2025-07-16**: Added `!tts say <message>` / `/say` command for Discord-native TTS input (no Steam needed)
 - **2025-07-16**: Timestamped JSON backups (`{file}.{timestamp}.bak`), empty write guards, snapshot serialization in Saver()
@@ -192,8 +229,6 @@ dotnet run
 - **Previous**: Discord.Net → NetCord migration, Coqui TTS server mode, comprehensive logging
 
 ## Future Enhancements
-- Add PocketTTS (Kyutai) engine support with custom voices and HuggingFace integration (see `.prompts/add-pocket-tts.md`)
-- TTS engine enable/disable switches in config
 - More TTS voice options
 - Old timestamped backup cleanup (prune backups older than N days)
 

@@ -8,6 +8,11 @@
         <add key="EnableMessageContent" value="true" />
         <!-- Optional experimental coqui tts support -->
         <add key="ffmpeg" value="C:\tts\Scripts\ffmpeg.exe" />
+
+        <!-- TTS Engine Switches -->
+        <add key="EnableSystemSpeech" value="true" />
+        <add key="EnableCoquiTTS" value="true" />
+        <add key="EnablePocketTTS" value="true" />
         <add key="coquitts" value="C:\tts\Scripts\tts.exe" />
         
         <!-- Coqui TTS Configuration -->
@@ -32,5 +37,31 @@
         <!-- Coqui TTS Voice Configuration for Server Mode (speaker names for the loaded model) -->
         <!-- These will be discovered from the server API, but can be overridden here -->
         <add key="CoquiSpeakers" value="default,speaker_0,speaker_1,speaker_2" />
+        
+        <!-- PocketTTS Configuration -->
+        <add key="PocketTTS_Executable" value="uvx" />
+        <!-- How the bot invokes pocket-tts. Options:
+             "uvx" (default) — runs: uvx - -from "git+https://github.com/kyutai-labs/pocket-tts.git" pocket-tts serve ...
+             "pocket-tts" — runs: pocket-tts serve ... (assumes pip-installed from git in a venv on PATH)
+             "C:\path\to\python.exe -m pocket_tts" — custom Python path -->
+        <add key="PocketTTS_ServerHost" value="localhost" />
+        <add key="PocketTTS_ServerPort" value="8000" />
+        <add key="PocketTTS_DefaultVoice" value="alba" />
+        <add key="PocketTTS_StartupTimeout" value="120" />
+        <add key="PocketTTS_RetryInterval" value="3" />
+        <add key="PocketTTS_RequestTimeout" value="60" />
+        
+        <!-- Directory where custom voice .safetensors files are stored -->
+        <!-- Custom voice mappings are auto-discovered from this directory and persisted in pocketvoices.json -->
+        <add key="PocketTTS_VoiceDirectory" value="C:\PocketTTS\voices" />
+        
+        <!-- Discord user IDs allowed to upload custom voices (comma-separated, "*" for everyone) -->
+        <add key="PocketTTS_VoiceUploadAllowlist" value="" />
+        
+        <!-- Maximum file size for voice uploads in MB -->
+        <add key="PocketTTS_MaxUploadSizeMB" value="10" />
+        
+        <!-- HuggingFace Token for downloading models and voice cloning access -->
+        <add key="HuggingFace_Token" value="" />
     </appSettings>
 </configuration>

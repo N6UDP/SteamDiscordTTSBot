@@ -101,7 +101,7 @@ namespace DiscordBotTTS
 
         // Public method for handling TTS commands that can be called from both text and slash commands
         public async Task HandleTTSCommandAsync(string subCommand, TextChannel textChannel, ulong guildId, ulong userId, string username,
-            string[] args = null, ulong? voiceChannelId = null)
+            string[] args = null, ulong? voiceChannelId = null, string attachmentUrl = null, string attachmentFileName = null)
         {
             Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - TTS subcommand: {subCommand}");
 
@@ -164,6 +164,26 @@ namespace DiscordBotTTS
                         await _ttsModule.Help(textChannel);
                         break;
 
+                    case "uploadvoice":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS uploadvoice command");
+                        await HandleUploadVoiceCommandAsync(args, textChannel, userId, attachmentUrl, attachmentFileName);
+                        break;
+
+                    case "renamevoice":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS renamevoice command");
+                        await HandleRenameVoiceCommandAsync(args, textChannel, userId);
+                        break;
+
+                    case "deletevoice":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS deletevoice command");
+                        await HandleDeleteVoiceCommandAsync(args, textChannel, userId);
+                        break;
+
+                    case "customvoices":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS customvoices command");
+                        await _ttsModule.ListCustomVoices(textChannel);
+                        break;
+
                     default:
                         Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Unknown TTS subcommand: {subCommand}");
                         await textChannel.SendMessageAsync(new MessageProperties { Content = $"Unknown TTS command: {subCommand}. Try !tts help" });
@@ -197,8 +217,41 @@ namespace DiscordBotTTS
             var userId = message.Author.Id;
             var username = message.Author.Username;
 
-            // Delegate to the shared handler
-            await HandleTTSCommandAsync(subCommand, textChannel, guildId, userId, username, args);
+            // Delegate to the shared handler, resolving attachment info for upload commands
+            string attachmentUrl = null;
+            string attachmentFileName = null;
+
+            if (subCommand == "uploadvoice")
+            {
+                // Check for attachments on this message
+                if (message.Attachments != null && message.Attachments.Count > 0)
+                {
+                    var att = message.Attachments.First();
+                    attachmentUrl = att.Url;
+                    attachmentFileName = att.FileName;
+                }
+                // If this message is a reply, check the referenced message for attachments
+                else if (message.MessageReference != null && message.MessageReference.MessageId != 0)
+                {
+                    try
+                    {
+                        var referencedMsg = await _restClient.GetMessageAsync(message.ChannelId, message.MessageReference.MessageId);
+                        if (referencedMsg.Attachments != null && referencedMsg.Attachments.Count > 0)
+                        {
+                            var att = referencedMsg.Attachments.First();
+                            attachmentUrl = att.Url;
+                            attachmentFileName = att.FileName;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error fetching referenced message: {ex.Message}");
+                    }
+                }
+            }
+
+            await HandleTTSCommandAsync(subCommand, textChannel, guildId, userId, username, args,
+                attachmentUrl: attachmentUrl, attachmentFileName: attachmentFileName);
         }
 
         private async Task HandleJoinCommandAsync(TextChannel textChannel, ulong guildId, ulong userId, string username, ulong? voiceChannelId = null)
@@ -342,6 +395,46 @@ namespace DiscordBotTTS
             {
                 await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts say <message>" });
             }
+        }
+
+        private async Task HandleUploadVoiceCommandAsync(string[] args, TextChannel textChannel, ulong userId, string attachmentUrl, string attachmentFileName)
+        {
+            // Usage: !tts uploadvoice <name> (with .wav attachment or reply to a message with .wav attachment)
+            if (args == null || args.Length < 3)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts uploadvoice <name> (attach a .wav file or reply to a message with one)" });
+                return;
+            }
+
+            var voiceName = args[2];
+            await _ttsModule.UploadVoice(voiceName, userId, textChannel, attachmentUrl, attachmentFileName);
+        }
+
+        private async Task HandleRenameVoiceCommandAsync(string[] args, TextChannel textChannel, ulong userId)
+        {
+            // Usage: !tts renamevoice <oldname> <newname>
+            if (args == null || args.Length < 4)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts renamevoice <oldname> <newname>" });
+                return;
+            }
+
+            var oldName = args[2];
+            var newName = args[3];
+            await _ttsModule.RenameVoice(oldName, newName, userId, textChannel);
+        }
+
+        private async Task HandleDeleteVoiceCommandAsync(string[] args, TextChannel textChannel, ulong userId)
+        {
+            // Usage: !tts deletevoice <name>
+            if (args == null || args.Length < 3)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts deletevoice <name>" });
+                return;
+            }
+
+            var voiceName = args[2];
+            await _ttsModule.DeleteVoice(voiceName, userId, textChannel);
         }
     }
 }

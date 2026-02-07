@@ -16,6 +16,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
 using System.Net.Http;
+using System.Net.Http.Headers;
 
 namespace DiscordBotTTS
 {
@@ -51,6 +52,26 @@ namespace DiscordBotTTS
         private static Process _coquiServerProcess;
         private static bool _serverStarted = false;
         private static readonly object _serverLock = new object();
+
+        // PocketTTS fields
+        private static Process _pocketServerProcess;
+        private static bool _pocketServerStarted = false;
+        private static readonly object _pocketServerLock = new object();
+        private static Dictionary<string, string> pocketVoiceModels = new Dictionary<string, string>();
+        private static readonly string[] PocketPredefinedVoices = { "alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma" };
+
+        // Engine enable/disable switches
+        private static bool _enableSystemSpeech = true;
+        private static bool _enableCoquiTTS = true;
+        private static bool _enablePocketTTS = true;
+
+        public static void LoadEngineSwitch()
+        {
+            _enableSystemSpeech = bool.TryParse(ConfigurationManager.AppSettings.Get("EnableSystemSpeech"), out var es) ? es : true;
+            _enableCoquiTTS = bool.TryParse(ConfigurationManager.AppSettings.Get("EnableCoquiTTS"), out var ec) ? ec : true;
+            _enablePocketTTS = bool.TryParse(ConfigurationManager.AppSettings.Get("EnablePocketTTS"), out var ep) ? ep : true;
+            Log($"Engine switches — SystemSpeech={_enableSystemSpeech}, CoquiTTS={_enableCoquiTTS}, PocketTTS={_enablePocketTTS}");
+        }
         
         // Load Coqui voice configuration from app.config
         private static void LoadCoquiVoiceConfiguration()
@@ -92,6 +113,12 @@ namespace DiscordBotTTS
         // Initialize Coqui TTS server on application startup
         public static async Task InitializeCoquiServerAsync()
         {
+            if (!_enableCoquiTTS)
+            {
+                Log("Coqui TTS engine disabled via config — skipping server startup");
+                return;
+            }
+
             var coquiMode = ConfigurationManager.AppSettings.Get("CoquiMode")?.ToLower() ?? "exe";
             if (coquiMode == "server")
             {
@@ -280,6 +307,704 @@ namespace DiscordBotTTS
                     }
                 }
             }
+        }
+
+        // ==================== PocketTTS Engine ====================
+
+        // Initialize PocketTTS server on application startup
+        public static async Task InitializePocketTTSServerAsync()
+        {
+            if (!_enablePocketTTS)
+            {
+                Log("PocketTTS engine disabled via config — skipping server startup");
+                return;
+            }
+
+            Log("Initializing PocketTTS server at startup...");
+
+            // Ensure voice directory exists
+            var voiceDir = ConfigurationManager.AppSettings.Get("PocketTTS_VoiceDirectory") ?? "";
+            if (!string.IsNullOrEmpty(voiceDir))
+            {
+                try
+                {
+                    Directory.CreateDirectory(voiceDir);
+                    Log($"PocketTTS voice directory ensured: {voiceDir}");
+                }
+                catch (Exception ex)
+                {
+                    Log($"Failed to create PocketTTS voice directory '{voiceDir}': {ex.Message}", "Warning");
+                }
+            }
+
+            await EnsurePocketServerStarted();
+            await WaitForPocketServerReady();
+
+            // Discover voices
+            DiscoverPocketVoices();
+            Log($"PocketTTS initialized with {pocketVoiceModels.Count} voices");
+        }
+
+        private static void DiscoverPocketVoices()
+        {
+            pocketVoiceModels.Clear();
+
+            // Register predefined voices
+            foreach (var v in PocketPredefinedVoices)
+            {
+                pocketVoiceModels[$"Pocket_{v}"] = v;
+            }
+
+            // Auto-discover custom voices from voice directory (.safetensors files)
+            var voiceDir = ConfigurationManager.AppSettings.Get("PocketTTS_VoiceDirectory") ?? "";
+            if (!string.IsNullOrEmpty(voiceDir) && Directory.Exists(voiceDir))
+            {
+                foreach (var file in Directory.GetFiles(voiceDir, "*.safetensors"))
+                {
+                    var name = Path.GetFileNameWithoutExtension(file);
+                    var key = $"Pocket_{name}";
+                    if (!pocketVoiceModels.ContainsKey(key))
+                    {
+                        pocketVoiceModels[key] = file;
+                        Log($"Auto-discovered PocketTTS custom voice: {key} → {file}");
+                    }
+                }
+            }
+
+            // Load additional custom voice mappings from pocketvoices.json (HF URLs, non-standard paths, etc.)
+            LoadPocketVoicesJson();
+
+            Log($"PocketTTS voice discovery complete: {pocketVoiceModels.Count} voices ({PocketPredefinedVoices.Length} predefined + {pocketVoiceModels.Count - PocketPredefinedVoices.Length} custom)");
+        }
+
+        private static readonly string PocketVoicesJsonPath = "pocketvoices.json";
+
+        private static void LoadPocketVoicesJson()
+        {
+            try
+            {
+                if (File.Exists(PocketVoicesJsonPath))
+                {
+                    var json = File.ReadAllText(PocketVoicesJsonPath);
+                    if (!string.IsNullOrWhiteSpace(json) && json != "{}")
+                    {
+                        var entries = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+                        if (entries != null)
+                        {
+                            foreach (var kv in entries)
+                            {
+                                var key = kv.Key.StartsWith("Pocket_", StringComparison.OrdinalIgnoreCase)
+                                    ? kv.Key
+                                    : $"Pocket_{kv.Key}";
+                                if (!pocketVoiceModels.ContainsKey(key))
+                                {
+                                    pocketVoiceModels[key] = kv.Value;
+                                    Log($"Loaded PocketTTS voice from pocketvoices.json: {key} → {kv.Value}");
+                                }
+                            }
+                            Log($"Loaded {entries.Count} custom voice mappings from {PocketVoicesJsonPath}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Error loading {PocketVoicesJsonPath}: {ex.Message}", "Warning");
+            }
+        }
+
+        private static void SavePocketVoicesJson()
+        {
+            try
+            {
+                // Build dict of only custom (non-predefined) voices
+                var customEntries = new Dictionary<string, string>();
+                foreach (var kv in pocketVoiceModels)
+                {
+                    // Skip predefined voices — they're always auto-registered
+                    if (PocketPredefinedVoices.Contains(kv.Value, StringComparer.OrdinalIgnoreCase))
+                        continue;
+                    customEntries[kv.Key] = kv.Value;
+                }
+
+                var json = JsonSerializer.Serialize(customEntries, new JsonSerializerOptions { WriteIndented = true });
+
+                // Guard: never write empty data
+                if (string.IsNullOrWhiteSpace(json) || json == "{}")
+                {
+                    // If there are no custom voices, delete the file if it exists
+                    if (File.Exists(PocketVoicesJsonPath))
+                    {
+                        File.Delete(PocketVoicesJsonPath);
+                        Log("Removed empty pocketvoices.json (no custom voices)");
+                    }
+                    return;
+                }
+
+                // Atomic write with backup (same pattern as userprefs.json)
+                var tmpPath = PocketVoicesJsonPath + ".tmp";
+                File.WriteAllText(tmpPath, json);
+                if (File.Exists(PocketVoicesJsonPath))
+                {
+                    var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+                    var backupPath = $"{PocketVoicesJsonPath}.{timestamp}.bak";
+                    try { File.Copy(PocketVoicesJsonPath, backupPath, true); }
+                    catch (Exception ex) { Log($"Failed to create pocketvoices backup: {ex.Message}", "Warning"); }
+                }
+                File.Move(tmpPath, PocketVoicesJsonPath, true);
+                Log($"Saved {customEntries.Count} custom voice mappings to {PocketVoicesJsonPath}");
+            }
+            catch (Exception ex)
+            {
+                Log($"Error saving {PocketVoicesJsonPath}: {ex.Message}", "Error");
+            }
+        }
+
+        private static async Task<bool> EnsurePocketServerStarted()
+        {
+            lock (_pocketServerLock)
+            {
+                if (_pocketServerStarted && _pocketServerProcess != null && !_pocketServerProcess.HasExited)
+                    return true;
+
+                try
+                {
+                    var executable = ConfigurationManager.AppSettings.Get("PocketTTS_Executable") ?? "uvx";
+                    var host = ConfigurationManager.AppSettings.Get("PocketTTS_ServerHost") ?? "localhost";
+                    var port = ConfigurationManager.AppSettings.Get("PocketTTS_ServerPort") ?? "8000";
+                    var defaultVoice = ConfigurationManager.AppSettings.Get("PocketTTS_DefaultVoice") ?? "alba";
+                    var hfToken = ConfigurationManager.AppSettings.Get("HuggingFace_Token") ?? "";
+
+                    string fileName;
+                    string arguments;
+
+                    if (executable.Equals("uvx", StringComparison.OrdinalIgnoreCase))
+                    {
+                        fileName = "uvx";
+                        arguments = $"--from \"git+https://github.com/kyutai-labs/pocket-tts.git\" pocket-tts serve --host {host} --port {port} --voice {defaultVoice}";
+                    }
+                    else if (executable.Equals("pocket-tts", StringComparison.OrdinalIgnoreCase))
+                    {
+                        fileName = "pocket-tts";
+                        arguments = $"serve --host {host} --port {port} --voice {defaultVoice}";
+                    }
+                    else
+                    {
+                        // Custom command — split first token as filename, rest as prefix
+                        var parts = executable.Split(' ', 2);
+                        fileName = parts[0];
+                        var prefix = parts.Length > 1 ? parts[1] + " " : "";
+                        arguments = $"{prefix}serve --host {host} --port {port} --voice {defaultVoice}";
+                    }
+
+                    Log($"Starting PocketTTS server: {fileName} {arguments}");
+
+                    var startInfo = new ProcessStartInfo
+                    {
+                        FileName = fileName,
+                        Arguments = arguments,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    };
+
+                    // Pass HuggingFace token as env var if configured
+                    if (!string.IsNullOrEmpty(hfToken))
+                    {
+                        startInfo.EnvironmentVariables["HF_TOKEN"] = hfToken;
+                        Log("HuggingFace token set for PocketTTS server process");
+                    }
+
+                    _pocketServerProcess = new Process { StartInfo = startInfo };
+
+                    _pocketServerProcess.OutputDataReceived += (sender, e) =>
+                    {
+                        if (!string.IsNullOrEmpty(e.Data))
+                            Log($"PocketTTS: {e.Data}");
+                    };
+
+                    _pocketServerProcess.ErrorDataReceived += (sender, e) =>
+                    {
+                        if (!string.IsNullOrEmpty(e.Data))
+                            Log($"PocketTTS STDERR: {e.Data}", "Warning");
+                    };
+
+                    _pocketServerProcess.Start();
+                    _pocketServerProcess.BeginOutputReadLine();
+                    _pocketServerProcess.BeginErrorReadLine();
+
+                    _pocketServerStarted = true;
+                    Log($"PocketTTS server started on {host}:{port}");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Log($"Failed to start PocketTTS server: {ex.Message}", "Error");
+                    return false;
+                }
+            }
+        }
+
+        private static async Task WaitForPocketServerReady()
+        {
+            var host = ConfigurationManager.AppSettings.Get("PocketTTS_ServerHost") ?? "localhost";
+            var port = ConfigurationManager.AppSettings.Get("PocketTTS_ServerPort") ?? "8000";
+            var startupTimeout = int.Parse(ConfigurationManager.AppSettings.Get("PocketTTS_StartupTimeout") ?? "120");
+            var retryInterval = int.Parse(ConfigurationManager.AppSettings.Get("PocketTTS_RetryInterval") ?? "3");
+            var maxRetries = startupTimeout / retryInterval;
+
+            Log($"Waiting for PocketTTS server to be ready (timeout: {startupTimeout}s, retry interval: {retryInterval}s)...");
+
+            for (int attempt = 0; attempt < maxRetries; attempt++)
+            {
+                try
+                {
+                    var response = await _httpClient.GetAsync($"http://{host}:{port}/health");
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Log($"PocketTTS server is ready! (took {attempt * retryInterval}s)");
+                        return;
+                    }
+                    else
+                    {
+                        Log($"PocketTTS health check returned {response.StatusCode}, retrying in {retryInterval}s... (attempt {attempt + 1}/{maxRetries})");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"PocketTTS not ready yet: {ex.Message}, retrying in {retryInterval}s... (attempt {attempt + 1}/{maxRetries})");
+                }
+
+                await Task.Delay(retryInterval * 1000);
+            }
+
+            Log($"PocketTTS server did not become ready within {startupTimeout}s timeout", "Warning");
+        }
+
+        public static void CleanupPocketTTSServer()
+        {
+            lock (_pocketServerLock)
+            {
+                if (_pocketServerProcess != null && !_pocketServerProcess.HasExited)
+                {
+                    try
+                    {
+                        Log("Shutting down PocketTTS server...");
+                        _pocketServerProcess.Kill();
+                        _pocketServerProcess.WaitForExit(5000);
+                        _pocketServerProcess.Dispose();
+                        _pocketServerProcess = null;
+                        _pocketServerStarted = false;
+                        Log("PocketTTS server shutdown completed");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"Error shutting down PocketTTS server: {ex.Message}", "Warning");
+                    }
+                }
+            }
+        }
+
+        private async Task<(bool success, string tempPath)> CreatePocketTTSFile(string text, string voice)
+        {
+            var host = ConfigurationManager.AppSettings.Get("PocketTTS_ServerHost") ?? "localhost";
+            var port = ConfigurationManager.AppSettings.Get("PocketTTS_ServerPort") ?? "8000";
+            var requestTimeout = int.Parse(ConfigurationManager.AppSettings.Get("PocketTTS_RequestTimeout") ?? "60");
+
+            // Resolve voice: strip Pocket_ prefix
+            string resolvedVoice;
+            if (pocketVoiceModels.TryGetValue(voice, out var mapped))
+            {
+                resolvedVoice = mapped;
+            }
+            else
+            {
+                // Strip prefix and use as-is
+                resolvedVoice = voice.StartsWith("Pocket_", StringComparison.OrdinalIgnoreCase)
+                    ? voice.Substring(7)
+                    : voice;
+            }
+
+            var tempPath = Path.GetTempFileName() + ".wav";
+
+            try
+            {
+                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(requestTimeout) };
+                using var formContent = new MultipartFormDataContent();
+                formContent.Add(new StringContent(text), "text");
+
+                // Check if resolvedVoice is a local file path (custom .safetensors or .wav)
+                if (File.Exists(resolvedVoice))
+                {
+                    if (resolvedVoice.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // safetensors files can be passed as voice_url path
+                        formContent.Add(new StringContent(resolvedVoice), "voice_url");
+                    }
+                    else if (resolvedVoice.EndsWith(".wav", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Upload .wav as voice_wav
+                        var wavBytes = await File.ReadAllBytesAsync(resolvedVoice);
+                        var wavContent = new ByteArrayContent(wavBytes);
+                        wavContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+                        formContent.Add(wavContent, "voice_wav", Path.GetFileName(resolvedVoice));
+                    }
+                    else
+                    {
+                        formContent.Add(new StringContent(resolvedVoice), "voice_url");
+                    }
+                }
+                else
+                {
+                    // Predefined voice name or HF URL — pass as voice_url
+                    formContent.Add(new StringContent(resolvedVoice), "voice_url");
+                }
+
+                Log($"PocketTTS request: text='{text}', voice='{resolvedVoice}'");
+
+                var response = await client.PostAsync($"http://{host}:{port}/tts", formContent);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var audioData = await response.Content.ReadAsByteArrayAsync();
+                    await File.WriteAllBytesAsync(tempPath, audioData);
+                    Log($"PocketTTS generated audio: {tempPath} ({audioData.Length} bytes)");
+                    return (true, tempPath);
+                }
+                else
+                {
+                    var errorBody = await response.Content.ReadAsStringAsync();
+                    Log($"PocketTTS API failed: {response.StatusCode} — {errorBody}", "Error");
+                    return (false, null);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"PocketTTS request error: {ex.Message}", "Error");
+                if (File.Exists(tempPath)) File.Delete(tempPath);
+                return (false, null);
+            }
+        }
+
+        // ==================== Voice Upload/Rename/Delete Commands ====================
+
+        private static bool IsUserAllowedToUpload(ulong userId)
+        {
+            var allowlist = ConfigurationManager.AppSettings.Get("PocketTTS_VoiceUploadAllowlist") ?? "";
+            if (string.IsNullOrWhiteSpace(allowlist)) return false;
+            if (allowlist.Trim() == "*") return true;
+            return allowlist.Split(',').Select(s => s.Trim()).Any(id => id == userId.ToString());
+        }
+
+        private static string BuildPocketTTSCommand(string subCommand, string extraArgs)
+        {
+            var executable = ConfigurationManager.AppSettings.Get("PocketTTS_Executable") ?? "uvx";
+
+            if (executable.Equals("uvx", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"uvx --from \"git+https://github.com/kyutai-labs/pocket-tts.git\" pocket-tts {subCommand} {extraArgs}";
+            }
+            else if (executable.Equals("pocket-tts", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"pocket-tts {subCommand} {extraArgs}";
+            }
+            else
+            {
+                // Custom command prefix
+                var parts = executable.Split(' ', 2);
+                var prefix = parts.Length > 1 ? parts[1] + " " : "";
+                return $"{parts[0]} {prefix}{subCommand} {extraArgs}";
+            }
+        }
+
+        public async Task UploadVoice(string name, ulong userId, TextChannel textChannel, string attachmentUrl, string fileName)
+        {
+            if (!_enablePocketTTS)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "PocketTTS engine is disabled." });
+                return;
+            }
+
+            if (!IsUserAllowedToUpload(userId))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "You don't have permission to upload custom voices." });
+                return;
+            }
+
+            var voiceDir = ConfigurationManager.AppSettings.Get("PocketTTS_VoiceDirectory") ?? "";
+            if (string.IsNullOrEmpty(voiceDir))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Custom voice storage is not configured. Set PocketTTS_VoiceDirectory in App.config." });
+                return;
+            }
+
+            // Check name doesn't conflict with predefined voices
+            if (PocketPredefinedVoices.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Cannot use that name — it conflicts with a built-in voice: {name}" });
+                return;
+            }
+
+            // Validate file extension
+            var ext = Path.GetExtension(fileName).ToLowerInvariant();
+            if (ext != ".wav" && ext != ".mp3" && ext != ".safetensors")
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Unsupported file type. Please upload a .wav, .mp3, or .safetensors file." });
+                return;
+            }
+
+            // Validate file size
+            var maxSizeMB = int.Parse(ConfigurationManager.AppSettings.Get("PocketTTS_MaxUploadSizeMB") ?? "10");
+
+            try
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Processing voice upload '{name}'..." });
+
+                // Download the attachment
+                using var client = new HttpClient();
+                var data = await client.GetByteArrayAsync(attachmentUrl);
+
+                if (data.Length > maxSizeMB * 1024 * 1024)
+                {
+                    await textChannel.SendMessageAsync(new MessageProperties { Content = $"File exceeds maximum size of {maxSizeMB}MB." });
+                    return;
+                }
+
+                var outputPath = Path.Combine(voiceDir, $"{name}.safetensors");
+
+                if (ext == ".safetensors")
+                {
+                    // Copy directly
+                    await File.WriteAllBytesAsync(outputPath, data);
+                    Log($"Voice upload: copied .safetensors directly to {outputPath}");
+                }
+                else
+                {
+                    // Save temp file and run export-voice
+                    var tempInput = Path.GetTempFileName() + ext;
+                    await File.WriteAllBytesAsync(tempInput, data);
+
+                    try
+                    {
+                        var fullCmd = BuildPocketTTSCommand("export-voice", $"\"{tempInput}\" \"{outputPath}\"");
+                        // Parse the command
+                        var cmdParts = fullCmd.Split(' ', 2);
+
+                        var startInfo = new ProcessStartInfo
+                        {
+                            FileName = cmdParts[0],
+                            Arguments = cmdParts.Length > 1 ? cmdParts[1] : "",
+                            UseShellExecute = false,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            CreateNoWindow = true
+                        };
+
+                        var hfToken = ConfigurationManager.AppSettings.Get("HuggingFace_Token") ?? "";
+                        if (!string.IsNullOrEmpty(hfToken))
+                        {
+                            startInfo.EnvironmentVariables["HF_TOKEN"] = hfToken;
+                        }
+
+                        Log($"Running export-voice: {fullCmd}");
+                        var process = new Process { StartInfo = startInfo };
+                        process.Start();
+
+                        var stdout = await process.StandardOutput.ReadToEndAsync();
+                        var stderr = await process.StandardError.ReadToEndAsync();
+                        await process.WaitForExitAsync();
+
+                        if (!string.IsNullOrEmpty(stdout)) Log($"export-voice stdout: {stdout}");
+                        if (!string.IsNullOrEmpty(stderr)) Log($"export-voice stderr: {stderr}", "Warning");
+
+                        if (process.ExitCode != 0 || !File.Exists(outputPath))
+                        {
+                            await textChannel.SendMessageAsync(new MessageProperties { Content = "Failed to process voice sample. The audio file may be corrupted or too short." });
+
+                            if (!string.IsNullOrEmpty(hfToken))
+                            {
+                                // Token was set, maybe other issue
+                            }
+                            else
+                            {
+                                await textChannel.SendMessageAsync(new MessageProperties { Content = "Note: HuggingFace token may be required for voice processing. Set HuggingFace_Token in App.config and accept terms at <https://huggingface.co/kyutai/pocket-tts>" });
+                            }
+                            return;
+                        }
+                    }
+                    finally
+                    {
+                        if (File.Exists(tempInput)) File.Delete(tempInput);
+                    }
+                }
+
+                // Register the new voice and persist to JSON
+                var voiceKey = $"Pocket_{name}";
+                pocketVoiceModels[voiceKey] = outputPath;
+                SavePocketVoicesJson();
+                Log($"Voice uploaded and registered: {voiceKey} → {outputPath}");
+
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"✅ Voice uploaded! Use: `!tts changevoice {voiceKey}`" });
+            }
+            catch (Exception ex)
+            {
+                Log($"Voice upload error: {ex.Message}", "Error");
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Error uploading voice: {ex.Message}" });
+            }
+        }
+
+        public async Task RenameVoice(string oldName, string newName, ulong userId, TextChannel textChannel)
+        {
+            if (!_enablePocketTTS)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "PocketTTS engine is disabled." });
+                return;
+            }
+
+            if (!IsUserAllowedToUpload(userId))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "You don't have permission to manage custom voices." });
+                return;
+            }
+
+            var voiceDir = ConfigurationManager.AppSettings.Get("PocketTTS_VoiceDirectory") ?? "";
+            if (string.IsNullOrEmpty(voiceDir))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Custom voice storage is not configured." });
+                return;
+            }
+
+            // Check new name doesn't conflict with predefined voices
+            if (PocketPredefinedVoices.Contains(newName, StringComparer.OrdinalIgnoreCase))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Cannot use that name — it conflicts with a built-in voice: {newName}" });
+                return;
+            }
+
+            var oldPath = Path.Combine(voiceDir, $"{oldName}.safetensors");
+            var newPath = Path.Combine(voiceDir, $"{newName}.safetensors");
+
+            if (!File.Exists(oldPath))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Voice '{oldName}' not found in voice directory." });
+                return;
+            }
+
+            if (File.Exists(newPath))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"A voice named '{newName}' already exists." });
+                return;
+            }
+
+            try
+            {
+                File.Move(oldPath, newPath);
+                pocketVoiceModels.Remove($"Pocket_{oldName}");
+                pocketVoiceModels[$"Pocket_{newName}"] = newPath;
+                SavePocketVoicesJson();
+                Log($"Voice renamed: Pocket_{oldName} → Pocket_{newName}");
+
+                await textChannel.SendMessageAsync(new MessageProperties
+                {
+                    Content = $"✅ Voice renamed from `Pocket_{oldName}` to `Pocket_{newName}`.\n" +
+                              $"⚠️ Users currently using `Pocket_{oldName}` will need to run `!tts changevoice Pocket_{newName}`."
+                });
+            }
+            catch (Exception ex)
+            {
+                Log($"Voice rename error: {ex.Message}", "Error");
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Error renaming voice: {ex.Message}" });
+            }
+        }
+
+        public async Task DeleteVoice(string name, ulong userId, TextChannel textChannel)
+        {
+            if (!_enablePocketTTS)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "PocketTTS engine is disabled." });
+                return;
+            }
+
+            if (!IsUserAllowedToUpload(userId))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "You don't have permission to manage custom voices." });
+                return;
+            }
+
+            // Prevent deleting predefined voices
+            if (PocketPredefinedVoices.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Cannot delete built-in voice: {name}" });
+                return;
+            }
+
+            var voiceDir = ConfigurationManager.AppSettings.Get("PocketTTS_VoiceDirectory") ?? "";
+            if (string.IsNullOrEmpty(voiceDir))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Custom voice storage is not configured." });
+                return;
+            }
+
+            var filePath = Path.Combine(voiceDir, $"{name}.safetensors");
+
+            if (!File.Exists(filePath))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Voice '{name}' not found in voice directory." });
+                return;
+            }
+
+            try
+            {
+                File.Delete(filePath);
+                pocketVoiceModels.Remove($"Pocket_{name}");
+                SavePocketVoicesJson();
+                Log($"Voice deleted: Pocket_{name} ({filePath})");
+
+                await textChannel.SendMessageAsync(new MessageProperties
+                {
+                    Content = $"✅ Voice `Pocket_{name}` deleted.\n" +
+                              $"⚠️ Users currently using this voice will need to change to a different voice."
+                });
+            }
+            catch (Exception ex)
+            {
+                Log($"Voice delete error: {ex.Message}", "Error");
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Error deleting voice: {ex.Message}" });
+            }
+        }
+
+        public async Task ListCustomVoices(TextChannel textChannel)
+        {
+            if (!_enablePocketTTS)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "PocketTTS engine is disabled." });
+                return;
+            }
+
+            var voiceDir = ConfigurationManager.AppSettings.Get("PocketTTS_VoiceDirectory") ?? "";
+            var customVoices = new List<string>();
+
+            if (!string.IsNullOrEmpty(voiceDir) && Directory.Exists(voiceDir))
+            {
+                foreach (var file in Directory.GetFiles(voiceDir, "*.safetensors"))
+                {
+                    customVoices.Add(Path.GetFileNameWithoutExtension(file));
+                }
+            }
+
+            if (customVoices.Count == 0)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "No custom PocketTTS voices found.\nUse `!tts uploadvoice <name>` with an attached .wav/.mp3/.safetensors file to add one." });
+                return;
+            }
+
+            var list = string.Join("\n", customVoices.Select(v => $"• Pocket_{v}"));
+            await textChannel.SendMessageAsync(new MessageProperties
+            {
+                Content = $"**Custom PocketTTS Voices ({customVoices.Count}):**\n{list}\n\n" +
+                          $"Voice directory: `{voiceDir}`"
+            });
         }
         
         // Start Coqui TTS Server if configured
@@ -656,8 +1381,43 @@ namespace DiscordBotTTS
 
             using (var _ms = new MemoryStream())
             {
-                if (voice.StartsWith("CoQui"))
+                if (voice.StartsWith("Pocket", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (!_enablePocketTTS)
+                    {
+                        Log($"PocketTTS engine disabled — cannot use voice '{voice}'", "Warning");
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"PocketTTS engine is disabled. Change your voice with `!tts changevoice <voice>`." });
+                        return;
+                    }
+                    var (success, pocketPath) = await CreatePocketTTSFile(cleanmsg, voice);
+                    if (!success || pocketPath == null)
+                    {
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"PocketTTS failed to generate audio for: {cleanmsg}" });
+                        return;
+                    }
+                    try
+                    {
+                        using (var ffmpeg = CreateStream(pocketPath))
+                        {
+                            using (var output = ffmpeg.StandardOutput.BaseStream)
+                            {
+                                await output.CopyToAsync(_ms);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (File.Exists(pocketPath)) File.Delete(pocketPath);
+                    }
+                }
+                else if (voice.StartsWith("CoQui"))
+                {
+                    if (!_enableCoquiTTS)
+                    {
+                        Log($"CoquiTTS engine disabled — cannot use voice '{voice}'", "Warning");
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"Coqui TTS engine is disabled. Change your voice with `!tts changevoice <voice>`." });
+                        return;
+                    }
                     var (coquitts, coquittspath) = await CreateTTSFile(cleanmsg, voice);
                     using (coquitts)
                     {
@@ -677,6 +1437,12 @@ namespace DiscordBotTTS
                 }
                 else
                 {
+                    if (!_enableSystemSpeech)
+                    {
+                        Log($"System.Speech engine disabled — cannot use voice '{voice}'", "Warning");
+                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"System.Speech engine is disabled. Change your voice with `!tts changevoice <voice>`." });
+                        return;
+                    }
                     using (var synth = new SpeechSynthesizer())
                     {
                         try
@@ -1035,10 +1801,15 @@ namespace DiscordBotTTS
                     "`!tts changerate <-10 to 10>` - Change speech rate (10 is fastest)\n" +
                     "`!tts changeserver` - Change server\n" +
                     "`!tts voices` - List all available voices\n" +
+                    "`!tts uploadvoice <name>` - Upload a custom PocketTTS voice (attach .wav/.mp3/.safetensors)\n" +
+                    "`!tts renamevoice <old> <new>` - Rename a custom PocketTTS voice\n" +
+                    "`!tts deletevoice <name>` - Delete a custom PocketTTS voice\n" +
+                    "`!tts customvoices` - List custom PocketTTS voices\n" +
                     "`!tts help` - Show this help\n\n" +
                     "**Available Voice Types:**\n" +
                     "• System voices (e.g., Microsoft David Desktop)\n" +
-                    "• Coqui TTS voices (CoQui_female_1, CoQui_male_1, etc.)\n\n" +
+                    "• Coqui TTS voices (prefix `CoQui`, e.g., CoQui_female_1)\n" +
+                    "• PocketTTS voices (prefix `Pocket`, e.g., Pocket_alba, Pocket_marius)\n\n" +
                     "Slash commands (/) are also supported!"
             });
         }
@@ -1181,9 +1952,36 @@ namespace DiscordBotTTS
         {
             voice = voice.Trim();
             
+            // Check for PocketTTS voices — any voice starting with "Pocket" prefix
+            if (voice.StartsWith("Pocket", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!_enablePocketTTS)
+                    return "";
+
+                // Allow generic "Pocket" for default voice
+                if (voice.Equals("Pocket", StringComparison.OrdinalIgnoreCase))
+                {
+                    var defaultVoice = ConfigurationManager.AppSettings.Get("PocketTTS_DefaultVoice") ?? "alba";
+                    return $"Pocket_{defaultVoice}";
+                }
+
+                // Check if the voice is in our discovered list
+                if (pocketVoiceModels.ContainsKey(voice))
+                    return voice;
+
+                // If not found but starts with Pocket_, allow it (the server will resolve)
+                if (voice.StartsWith("Pocket_", StringComparison.OrdinalIgnoreCase))
+                    return voice;
+
+                return "";
+            }
+
             // Check for Coqui TTS voices - any voice starting with "CoQui" prefix
             if (voice.StartsWith("CoQui", StringComparison.OrdinalIgnoreCase))
             {
+                if (!_enableCoquiTTS)
+                    return "";
+
                 // Load Coqui configuration if not already loaded
                 LoadCoquiVoiceConfiguration();
                 
@@ -1204,6 +2002,9 @@ namespace DiscordBotTTS
             }
             
             // Check for System.Speech voices
+            if (!_enableSystemSpeech)
+                return "";
+
             if (voices.Count == 0)
             {
                 var synth = new SpeechSynthesizer();
@@ -1230,27 +2031,66 @@ namespace DiscordBotTTS
         
         public async Task ListVoices(TextChannel channel)
         {
-            // Get System.Speech voices
-            if (voices.Count == 0)
+            var sections = new List<string>();
+
+            // System.Speech voices
+            if (_enableSystemSpeech)
             {
-                var synth = new SpeechSynthesizer();
-                voices = synth.GetInstalledVoices().Select(x => x.VoiceInfo.Name).ToList<string>();
-                synth.Dispose();
+                if (voices.Count == 0)
+                {
+                    var synth = new SpeechSynthesizer();
+                    voices = synth.GetInstalledVoices().Select(x => x.VoiceInfo.Name).ToList<string>();
+                    synth.Dispose();
+                }
+                var systemVoices = string.Join("\n", voices.Select(v => $"• {v}"));
+                sections.Add($"**System Voices:**\n{systemVoices}");
             }
-            
-            // Load Coqui configuration if not already loaded
-            LoadCoquiVoiceConfiguration();
-            
-            var systemVoices = string.Join("\n", voices.Select(v => $"• {v}"));
-            var coquiVoiceList = coquiVoiceModels.Count > 0
-                ? string.Join("\n", coquiVoiceModels.Keys.Select(v => $"• {v}"))
-                : "• No Coqui voices configured";
+
+            // Coqui TTS voices
+            if (_enableCoquiTTS)
+            {
+                LoadCoquiVoiceConfiguration();
+                var coquiVoiceList = coquiVoiceModels.Count > 0
+                    ? string.Join("\n", coquiVoiceModels.Keys.Select(v => $"• {v}"))
+                    : "• No Coqui voices configured";
+                sections.Add($"**Coqui TTS Voices:**\n{coquiVoiceList}");
+            }
+
+            // PocketTTS voices
+            if (_enablePocketTTS)
+            {
+                var predefined = pocketVoiceModels
+                    .Where(kv => PocketPredefinedVoices.Contains(kv.Value, StringComparer.OrdinalIgnoreCase))
+                    .Select(kv => $"• {kv.Key}")
+                    .ToList();
+
+                var custom = pocketVoiceModels
+                    .Where(kv => !PocketPredefinedVoices.Contains(kv.Value, StringComparer.OrdinalIgnoreCase))
+                    .Select(kv => $"• {kv.Key}")
+                    .ToList();
+
+                var pocketSection = "**PocketTTS Voices:**\n";
+                if (predefined.Count > 0)
+                    pocketSection += $"_Predefined:_\n{string.Join("\n", predefined)}\n";
+                if (custom.Count > 0)
+                    pocketSection += $"_Custom:_\n{string.Join("\n", custom)}\n";
+                if (predefined.Count == 0 && custom.Count == 0)
+                    pocketSection += "• No PocketTTS voices available\n";
+                pocketSection += "\nUpload custom voices with `!tts uploadvoice <name>` (attach .wav/.mp3/.safetensors)";
+
+                sections.Add(pocketSection);
+            }
+
+            if (sections.Count == 0)
+            {
+                await channel.SendMessageAsync(new MessageProperties { Content = "No TTS engines are enabled." });
+                return;
+            }
             
             await channel.SendMessageAsync(new MessageProperties
             {
                 Content = $"**Available TTS Voices:**\n\n" +
-                         $"**System Voices:**\n{systemVoices}\n\n" +
-                         $"**Coqui TTS Voices:**\n{coquiVoiceList}\n\n" +
+                         string.Join("\n\n", sections) + "\n\n" +
                          $"Use `!tts changevoice <voice_name>` to change your voice."
             });
         }

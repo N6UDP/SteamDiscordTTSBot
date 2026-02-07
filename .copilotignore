@@ -1,0 +1,2 @@
+# Hide files containing secrets from GitHub Copilot
+App.config
