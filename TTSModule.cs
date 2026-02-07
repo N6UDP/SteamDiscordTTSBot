@@ -65,20 +65,7 @@ namespace DiscordBotTTS
                 {
                     var coquiMode = ConfigurationManager.AppSettings.Get("CoquiMode")?.ToLower() ?? "exe";
                     
-                    if (coquiMode == "server")
-                    {
-                        // Discover speakers dynamically for server mode
-                        var discoveredSpeakers = Task.Run(async () => await DiscoverCoquiSpeakers()).Result;
-                        
-                        foreach (var speaker in discoveredSpeakers)
-                        {
-                            // For server mode, we'll use speaker names/indices
-                            coquiVoiceModels[$"CoQui_{speaker}"] = speaker;
-                        }
-                        
-                        Log($"Loaded {coquiVoiceModels.Count} Coqui speakers for server mode (discovered)");
-                    }
-                    else
+                    if (coquiMode == "exe")
                     {
                         // Load voice model mappings for exe mode (legacy)
                         var modelsConfig = ConfigurationManager.AppSettings.Get("CoquiVoiceModels");
@@ -97,6 +84,7 @@ namespace DiscordBotTTS
                         
                         Log($"Loaded {coquiVoiceModels.Count} Coqui voice models for exe mode");
                     }
+                    // Server mode is now handled in InitializeCoquiServerAsync with parallel discovery
                 }
                 catch (Exception ex)
                 {
@@ -114,11 +102,23 @@ namespace DiscordBotTTS
                 Log("Initializing Coqui TTS server at startup...");
                 await EnsureCoquiServerStarted();
                 
+                // Start speaker discovery in parallel with server startup
+                var speakerDiscoveryTask = Task.Run(async () => await DiscoverCoquiSpeakers());
+                
                 // Wait for server to be ready with retry mechanism
                 await WaitForServerReady();
                 
-                // Load voice configuration after server is ready
-                LoadCoquiVoiceConfiguration();
+                // Wait for speaker discovery to complete and load configuration
+                Log("Waiting for speaker discovery to complete...");
+                var discoveredSpeakers = await speakerDiscoveryTask;
+                
+                // Load discovered speakers into voice models
+                foreach (var speaker in discoveredSpeakers)
+                {
+                    coquiVoiceModels[$"CoQui_{speaker}"] = speaker;
+                }
+                
+                Log($"Loaded {coquiVoiceModels.Count} Coqui speakers for server mode (discovered in parallel)");
             }
             else
             {
@@ -559,11 +559,14 @@ namespace DiscordBotTTS
                     speakerName = configuredSpeaker;
                 }
                 
+                // Get default language from config
+                var defaultLanguage = ConfigurationManager.AppSettings.Get("coqui_server_default_language") ?? "en";
+                
                 // Coqui TTS server API expects form POST data
                 var formData = new List<KeyValuePair<string, string>>
                 {
                     new KeyValuePair<string, string>("text", cleanmsg),
-                    new KeyValuePair<string, string>("language_id", "en")  // Default to English
+                    new KeyValuePair<string, string>("language_id", defaultLanguage)
                 };
                 
                 if (!string.IsNullOrEmpty(speakerName))

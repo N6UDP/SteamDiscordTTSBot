@@ -5,6 +5,9 @@
     <TargetFramework>net9.0-windows</TargetFramework>
     <AssemblyName />
     <Platforms>x64</Platforms>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">

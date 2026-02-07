@@ -27,6 +27,7 @@
         <add key="coqui_server_timeout" value="30" />
         <add key="coqui_server_startup_timeout" value="60" />
         <add key="coqui_server_retry_interval" value="2" />
+        <add key="coqui_server_default_language" value="en" />
         
         <!-- Coqui TTS Voice Configuration for Server Mode (speaker names for the loaded model) -->
         <!-- These will be discovered from the server API, but can be overridden here -->
