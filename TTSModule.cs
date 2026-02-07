@@ -293,17 +293,20 @@ namespace DiscordBotTTS
                 {
                     try
                     {
-                        Log("Shutting down Coqui TTS server...");
-                        _coquiServerProcess.Kill();
-                        _coquiServerProcess.WaitForExit(5000); // Wait up to 5 seconds
-                        _coquiServerProcess.Dispose();
-                        _coquiServerProcess = null;
-                        _serverStarted = false;
+                        Log("Shutting down Coqui TTS server (killing process tree)...");
+                        _coquiServerProcess.Kill(entireProcessTree: true);
+                        _coquiServerProcess.WaitForExit(5000);
                         Log("Coqui TTS server shutdown completed");
                     }
                     catch (Exception ex)
                     {
                         Log($"Error shutting down Coqui TTS server: {ex.Message}", "Warning");
+                    }
+                    finally
+                    {
+                        try { _coquiServerProcess.Dispose(); } catch { }
+                        _coquiServerProcess = null;
+                        _serverStarted = false;
                     }
                 }
             }
@@ -590,19 +593,95 @@ namespace DiscordBotTTS
                 {
                     try
                     {
-                        Log("Shutting down PocketTTS server...");
-                        _pocketServerProcess.Kill();
+                        Log("Shutting down PocketTTS server (killing process tree)...");
+                        // Kill the entire process tree — uvx spawns a child Python process
+                        // that would otherwise remain running as an orphan
+                        _pocketServerProcess.Kill(entireProcessTree: true);
                         _pocketServerProcess.WaitForExit(5000);
-                        _pocketServerProcess.Dispose();
-                        _pocketServerProcess = null;
-                        _pocketServerStarted = false;
-                        Log("PocketTTS server shutdown completed");
+                        Log("PocketTTS process tree killed");
                     }
                     catch (Exception ex)
                     {
-                        Log($"Error shutting down PocketTTS server: {ex.Message}", "Warning");
+                        Log($"Error killing PocketTTS process tree: {ex.Message}", "Warning");
+                    }
+                    finally
+                    {
+                        try { _pocketServerProcess.Dispose(); } catch { }
+                        _pocketServerProcess = null;
+                        _pocketServerStarted = false;
                     }
                 }
+                else
+                {
+                    // Process already exited or was null — clean up reference
+                    if (_pocketServerProcess != null)
+                    {
+                        try { _pocketServerProcess.Dispose(); } catch { }
+                        _pocketServerProcess = null;
+                    }
+                    _pocketServerStarted = false;
+                }
+
+                // Fallback: kill any process still listening on the PocketTTS port
+                KillProcessOnPort(ConfigurationManager.AppSettings.Get("PocketTTS_ServerPort") ?? "8000");
+            }
+        }
+
+        private static void KillProcessOnPort(string port)
+        {
+            try
+            {
+                // Use netstat to find PID listening on the port
+                var netstat = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "cmd.exe",
+                        Arguments = $"/c netstat -ano | findstr \"LISTENING\" | findstr \":{port} \"",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true
+                    }
+                };
+                netstat.Start();
+                var output = netstat.StandardOutput.ReadToEnd();
+                netstat.WaitForExit(3000);
+
+                if (string.IsNullOrWhiteSpace(output)) return;
+
+                // Parse PIDs from netstat output (last column)
+                var pids = new HashSet<int>();
+                foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var parts = line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length > 0 && int.TryParse(parts[^1], out var pid) && pid > 0)
+                    {
+                        pids.Add(pid);
+                    }
+                }
+
+                foreach (var pid in pids)
+                {
+                    try
+                    {
+                        var proc = Process.GetProcessById(pid);
+                        Log($"Killing orphaned process on port {port}: PID {pid} ({proc.ProcessName})");
+                        proc.Kill(entireProcessTree: true);
+                        proc.WaitForExit(3000);
+                    }
+                    catch (ArgumentException)
+                    {
+                        // Process already exited
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"Failed to kill PID {pid}: {ex.Message}", "Warning");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Port cleanup fallback failed: {ex.Message}", "Warning");
             }
         }
 
@@ -635,29 +714,26 @@ namespace DiscordBotTTS
                 formContent.Add(new StringContent(text), "text");
 
                 // Check if resolvedVoice is a local file path (custom .safetensors or .wav)
+                // The PocketTTS API only accepts URLs (http://, https://, hf://) or predefined
+                // voice names for voice_url. Local files must be uploaded via voice_wav.
                 if (File.Exists(resolvedVoice))
                 {
-                    if (resolvedVoice.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // safetensors files can be passed as voice_url path
-                        formContent.Add(new StringContent(resolvedVoice), "voice_url");
-                    }
-                    else if (resolvedVoice.EndsWith(".wav", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Upload .wav as voice_wav
-                        var wavBytes = await File.ReadAllBytesAsync(resolvedVoice);
-                        var wavContent = new ByteArrayContent(wavBytes);
-                        wavContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
-                        formContent.Add(wavContent, "voice_wav", Path.GetFileName(resolvedVoice));
-                    }
-                    else
-                    {
-                        formContent.Add(new StringContent(resolvedVoice), "voice_url");
-                    }
+                    // Upload local file as voice_wav — the server will detect format by extension
+                    var fileBytes = await File.ReadAllBytesAsync(resolvedVoice);
+                    var fileContent = new ByteArrayContent(fileBytes);
+                    fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                    formContent.Add(fileContent, "voice_wav", Path.GetFileName(resolvedVoice));
+                }
+                else if (resolvedVoice.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                      || resolvedVoice.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                      || resolvedVoice.StartsWith("hf://", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Remote URL — pass as voice_url
+                    formContent.Add(new StringContent(resolvedVoice), "voice_url");
                 }
                 else
                 {
-                    // Predefined voice name or HF URL — pass as voice_url
+                    // Predefined voice name (alba, marius, etc.) — pass as voice_url
                     formContent.Add(new StringContent(resolvedVoice), "voice_url");
                 }
 

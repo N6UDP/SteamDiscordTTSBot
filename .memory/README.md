@@ -99,8 +99,8 @@ LeaveChannel():
 - Engine switches: `EnableSystemSpeech`, `EnableCoquiTTS`, `EnablePocketTTS` (each can be toggled independently)
 - Voice name starts with `Pocket` → PocketTTS engine (server mode HTTP API)
   - Predefined voices: alba, marius, javert, jean, fantine, cosette, eponine, azelma (sent as `voice_url`)
-  - Custom `.wav` voices uploaded by users (sent as `voice_wav` file upload)
-  - Custom `.safetensors` voices from `PocketTTS_VoiceDirectory` (sent as `voice_url` path)
+  - Custom voices (`.safetensors`, `.wav` local files) uploaded via `voice_wav` multipart form field (API rejects local paths in `voice_url`)
+  - Remote URLs (`http://`, `https://`, `hf://`) sent as `voice_url`
 - Voice name starts with `CoQui` → Coqui TTS engine
   - `CoquiMode=exe` → spawn tts.exe per request with model args
   - `CoquiMode=server` → HTTP POST to persistent tts-server API
@@ -207,6 +207,7 @@ dotnet run
 ```
 
 ## Important Conventions
+
 - Log format: `{DateTime.Now:yyyy-MM-dd HH:mm:ss}` or `{DateTime.Now:s}:Module:Level: message`
 - Voice prefix routing: `Pocket*` → PocketTTS, `CoQui*` → Coqui TTS, no prefix → System.Speech
 - Speech rate: -10 to 10
@@ -214,8 +215,12 @@ dotnet run
 - Bot auto-accepts all Steam friend requests
 - Thread safety: ConcurrentDictionary + SemaphoreSlim for shared state
 - Config changes: update both `App.config` and `App.config.example`
+- Process cleanup: always use `Kill(entireProcessTree: true)` for TTS server processes (uvx/coqui spawn child Python processes); `KillProcessOnPort()` provides fallback cleanup via netstat
 
 ## Recent Changes
+
+- **2026-02-07**: Fixed custom voice playback — local files (`.safetensors`, `.wav`) now uploaded via `voice_wav` form field instead of `voice_url` (PocketTTS API rejects local paths)
+- **2026-02-07**: Fixed orphaned PocketTTS/Coqui processes — use `Kill(entireProcessTree: true)` to kill `uvx` and its child Python process; added port-based fallback cleanup via `KillProcessOnPort()`
 - **2025-07-17**: Added PocketTTS (Kyutai Labs) engine — server mode, predefined voices (alba, marius, etc.), custom .wav voice upload/rename/delete, `pocketvoices.json` persistence, engine enable/disable switches, slash command integration
 - **2025-07-17**: Added `.copilotignore` to hide `App.config` from AI agents (contains secrets)
 - **2025-07-16**: Migrated from Newtonsoft.Json to System.Text.Json (removed NuGet package, using built-in)
@@ -229,8 +234,10 @@ dotnet run
 - **Previous**: Discord.Net → NetCord migration, Coqui TTS server mode, comprehensive logging
 
 ## Future Enhancements
+
 - More TTS voice options
 - Old timestamped backup cleanup (prune backups older than N days)
 
 ## Known Issues
+
 - ~~JSON persistence files becoming empty~~ — **FIXED**: Added empty write guards, snapshot serialization, timestamped backups, try/catch in Saver(), and load-time validation. Previous backup files are preserved with timestamps for recovery.

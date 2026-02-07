@@ -47,6 +47,7 @@ Always read and reference the shared memory bank at `.memory/README.md` before s
 - Guild ID is the primary key for voice connections
 - The bot auto-accepts Steam friend requests
 - Custom PocketTTS voices are persisted in `pocketvoices.json` (atomic write + timestamped backup, same pattern as `userprefs.json`)
+- Process cleanup: always use `Kill(entireProcessTree: true)` for TTS server processes — `uvx` and Coqui spawn child Python processes that would otherwise become orphans. `KillProcessOnPort()` provides fallback cleanup.
 
 ### Dependencies
 
