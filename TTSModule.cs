@@ -792,18 +792,21 @@ namespace DiscordBotTTS
         private static string BuildPocketTTSCommand(string subCommand, string extraArgs)
         {
             var executable = ConfigurationManager.AppSettings.Get("PocketTTS_Executable") ?? "uvx";
+            var uvxPath = ConfigurationManager.AppSettings.Get("PocketTTS_UvxPath") ?? "uvx";
+            var pocketTtsPath = ConfigurationManager.AppSettings.Get("PocketTTS_PocketTTSPath") ?? "pocket-tts";
+            var gitUrl = ConfigurationManager.AppSettings.Get("PocketTTS_GitUrl") ?? "git+https://github.com/N6UDP/pocket-tts.git";
 
             if (executable.Equals("uvx", StringComparison.OrdinalIgnoreCase))
             {
-                return $"uvx --from \"git+https://github.com/kyutai-labs/pocket-tts.git\" pocket-tts {subCommand} {extraArgs}";
+                return $"{uvxPath} --with soundfile --from {gitUrl} pocket-tts {subCommand} {extraArgs}";
             }
             else if (executable.Equals("pocket-tts", StringComparison.OrdinalIgnoreCase))
             {
-                return $"pocket-tts {subCommand} {extraArgs}";
+                return $"{pocketTtsPath} {subCommand} {extraArgs}";
             }
             else
             {
-                // Custom command prefix
+                // Custom command — split first token as filename, rest as prefix
                 var parts = executable.Split(' ', 2);
                 var prefix = parts.Length > 1 ? parts[1] + " " : "";
                 return $"{parts[0]} {prefix}{subCommand} {extraArgs}";
