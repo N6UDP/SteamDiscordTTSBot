@@ -41,15 +41,28 @@
         <!-- PocketTTS Configuration -->
         <add key="PocketTTS_Executable" value="uvx" />
         <!-- How the bot invokes pocket-tts. Options:
-             "uvx" (default) — runs: uvx - -from "git+https://github.com/kyutai-labs/pocket-tts.git" pocket-tts serve ...
+             "uvx" (default) — runs: uvx --with soundfile --from "git+https://github.com/N6UDP/pocket-tts" pocket-tts serve ...
              "pocket-tts" — runs: pocket-tts serve ... (assumes pip-installed from git in a venv on PATH)
              "C:\path\to\python.exe -m pocket_tts" — custom Python path -->
+        
+        <!-- Full path to uvx executable (used when PocketTTS_Executable=uvx) -->
+        <add key="PocketTTS_UvxPath" value="uvx" />
+        <!-- Full path to pocket-tts executable (used when PocketTTS_Executable=pocket-tts) -->
+        <add key="PocketTTS_PocketTTSPath" value="pocket-tts" />
+        <!-- Git URL for the pocket-tts package (used with uvx - -from) -->
+        <add key="PocketTTS_GitUrl" value="git+https://github.com/N6UDP/pocket-tts" />
+        
         <add key="PocketTTS_ServerHost" value="localhost" />
         <add key="PocketTTS_ServerPort" value="8000" />
         <add key="PocketTTS_DefaultVoice" value="alba" />
         <add key="PocketTTS_StartupTimeout" value="120" />
         <add key="PocketTTS_RetryInterval" value="3" />
         <add key="PocketTTS_RequestTimeout" value="60" />
+        
+        <!-- When true, pass local file paths directly as voice_url to the server instead of
+             uploading via voice_wav. Requires the N6UDP/pocket-tts fork with - -local-paths flag.
+             Only useful when the bot and PocketTTS server share the same filesystem. -->
+        <add key="PocketTTS_LocalPaths" value="false" />
         
         <!-- Directory where custom voice .safetensors files are stored -->
         <!-- Custom voice mappings are auto-discovered from this directory and persisted in pocketvoices.json -->

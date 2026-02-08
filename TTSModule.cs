@@ -64,13 +64,15 @@ namespace DiscordBotTTS
         private static bool _enableSystemSpeech = true;
         private static bool _enableCoquiTTS = true;
         private static bool _enablePocketTTS = true;
+        private static bool _pocketLocalPaths = false;
 
         public static void LoadEngineSwitch()
         {
             _enableSystemSpeech = bool.TryParse(ConfigurationManager.AppSettings.Get("EnableSystemSpeech"), out var es) ? es : true;
             _enableCoquiTTS = bool.TryParse(ConfigurationManager.AppSettings.Get("EnableCoquiTTS"), out var ec) ? ec : true;
             _enablePocketTTS = bool.TryParse(ConfigurationManager.AppSettings.Get("EnablePocketTTS"), out var ep) ? ep : true;
-            Log($"Engine switches — SystemSpeech={_enableSystemSpeech}, CoquiTTS={_enableCoquiTTS}, PocketTTS={_enablePocketTTS}");
+            _pocketLocalPaths = bool.TryParse(ConfigurationManager.AppSettings.Get("PocketTTS_LocalPaths"), out var lp) ? lp : false;
+            Log($"Engine switches — SystemSpeech={_enableSystemSpeech}, CoquiTTS={_enableCoquiTTS}, PocketTTS={_enablePocketTTS}, PocketLocalPaths={_pocketLocalPaths}");
         }
         
         // Load Coqui voice configuration from app.config
@@ -473,23 +475,27 @@ namespace DiscordBotTTS
                 try
                 {
                     var executable = ConfigurationManager.AppSettings.Get("PocketTTS_Executable") ?? "uvx";
+                    var uvxPath = ConfigurationManager.AppSettings.Get("PocketTTS_UvxPath") ?? "uvx";
+                    var pocketTtsPath = ConfigurationManager.AppSettings.Get("PocketTTS_PocketTTSPath") ?? "pocket-tts";
+                    var gitUrl = ConfigurationManager.AppSettings.Get("PocketTTS_GitUrl") ?? "git+https://github.com/N6UDP/pocket-tts.git";
                     var host = ConfigurationManager.AppSettings.Get("PocketTTS_ServerHost") ?? "localhost";
                     var port = ConfigurationManager.AppSettings.Get("PocketTTS_ServerPort") ?? "8000";
                     var defaultVoice = ConfigurationManager.AppSettings.Get("PocketTTS_DefaultVoice") ?? "alba";
                     var hfToken = ConfigurationManager.AppSettings.Get("HuggingFace_Token") ?? "";
+                    var localPathsFlag = _pocketLocalPaths ? " --local-paths" : "";
 
                     string fileName;
                     string arguments;
 
                     if (executable.Equals("uvx", StringComparison.OrdinalIgnoreCase))
                     {
-                        fileName = "uvx";
-                        arguments = $"--from \"git+https://github.com/kyutai-labs/pocket-tts.git\" pocket-tts serve --host {host} --port {port} --voice {defaultVoice}";
+                        fileName = uvxPath;
+                        arguments = $"--with soundfile --from {gitUrl} pocket-tts serve --host {host} --port {port} --voice {defaultVoice}{localPathsFlag}";
                     }
                     else if (executable.Equals("pocket-tts", StringComparison.OrdinalIgnoreCase))
                     {
-                        fileName = "pocket-tts";
-                        arguments = $"serve --host {host} --port {port} --voice {defaultVoice}";
+                        fileName = pocketTtsPath;
+                        arguments = $"serve --host {host} --port {port} --voice {defaultVoice}{localPathsFlag}";
                     }
                     else
                     {
@@ -497,7 +503,7 @@ namespace DiscordBotTTS
                         var parts = executable.Split(' ', 2);
                         fileName = parts[0];
                         var prefix = parts.Length > 1 ? parts[1] + " " : "";
-                        arguments = $"{prefix}serve --host {host} --port {port} --voice {defaultVoice}";
+                        arguments = $"{prefix}serve --host {host} --port {port} --voice {defaultVoice}{localPathsFlag}";
                     }
 
                     Log($"Starting PocketTTS server: {fileName} {arguments}");
@@ -714,15 +720,25 @@ namespace DiscordBotTTS
                 formContent.Add(new StringContent(text), "text");
 
                 // Check if resolvedVoice is a local file path (custom .safetensors or .wav)
-                // The PocketTTS API only accepts URLs (http://, https://, hf://) or predefined
-                // voice names for voice_url. Local files must be uploaded via voice_wav.
+                // When PocketTTS_LocalPaths is true, the server was started with --local-paths
+                // and can accept local file paths directly via voice_url (avoids uploading).
+                // When false (default), local files must be uploaded via voice_wav.
                 if (File.Exists(resolvedVoice))
                 {
-                    // Upload local file as voice_wav — the server will detect format by extension
-                    var fileBytes = await File.ReadAllBytesAsync(resolvedVoice);
-                    var fileContent = new ByteArrayContent(fileBytes);
-                    fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-                    formContent.Add(fileContent, "voice_wav", Path.GetFileName(resolvedVoice));
+                    if (_pocketLocalPaths)
+                    {
+                        // Server has --local-paths enabled — pass the absolute path as voice_url
+                        var absolutePath = Path.GetFullPath(resolvedVoice);
+                        formContent.Add(new StringContent(absolutePath), "voice_url");
+                    }
+                    else
+                    {
+                        // Upload local file as voice_wav — the server will detect format by extension
+                        var fileBytes = await File.ReadAllBytesAsync(resolvedVoice);
+                        var fileContent = new ByteArrayContent(fileBytes);
+                        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                        formContent.Add(fileContent, "voice_wav", Path.GetFileName(resolvedVoice));
+                    }
                 }
                 else if (resolvedVoice.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
                       || resolvedVoice.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
@@ -1744,7 +1760,13 @@ namespace DiscordBotTTS
                 }
                 else
                 {
-                    await channel.SendMessageAsync(new MessageProperties { Content = $"{username}:voice {voice} invalid." });
+                    var hint = "";
+                    if (voice.StartsWith("Pocket", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var available = string.Join(", ", pocketVoiceModels.Keys.OrderBy(k => k));
+                        hint = $"\nAvailable PocketTTS voices: {available}";
+                    }
+                    await channel.SendMessageAsync(new MessageProperties { Content = $"{username}:voice {voice} invalid.{hint}" });
                 }
             }
             else
@@ -2045,10 +2067,16 @@ namespace DiscordBotTTS
                 if (pocketVoiceModels.ContainsKey(voice))
                     return voice;
 
-                // If not found but starts with Pocket_, allow it (the server will resolve)
-                if (voice.StartsWith("Pocket_", StringComparison.OrdinalIgnoreCase))
+                // Try with Pocket_ prefix if not already present
+                if (!voice.StartsWith("Pocket_", StringComparison.OrdinalIgnoreCase))
+                    return "";
+
+                // Strip Pocket_ prefix and check if it's a known predefined voice
+                var stripped = voice.Substring(7);
+                if (PocketPredefinedVoices.Contains(stripped, StringComparer.OrdinalIgnoreCase))
                     return voice;
 
+                // Not a recognized voice
                 return "";
             }
 
