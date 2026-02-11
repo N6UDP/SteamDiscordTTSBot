@@ -813,7 +813,40 @@ namespace DiscordBotTTS
             }
         }
 
-        public async Task UploadVoice(string name, ulong userId, TextChannel textChannel, string attachmentUrl, string fileName)
+        /// <summary>
+        /// Build CLI flags for export-voice from user-specified parameters.
+        /// Only non-null/non-default values are appended.
+        /// </summary>
+        private static string BuildExportVoiceArgs(
+            bool truncate = false,
+            bool quiet = false,
+            string config = null,
+            int? lsdDecodeSteps = null,
+            float? temperature = null,
+            float? noiseClamp = null,
+            float? eosThreshold = null,
+            int? framesAfterEos = null,
+            string device = null)
+        {
+            var parts = new List<string>();
+
+            if (truncate) parts.Add("--truncate");
+            if (quiet) parts.Add("--quiet");
+            if (!string.IsNullOrWhiteSpace(config)) parts.Add($"--config {config}");
+            if (lsdDecodeSteps.HasValue) parts.Add($"--lsd-decode-steps {lsdDecodeSteps.Value}");
+            if (temperature.HasValue) parts.Add($"--temperature {temperature.Value}");
+            if (noiseClamp.HasValue) parts.Add($"--noise-clamp {noiseClamp.Value}");
+            if (eosThreshold.HasValue) parts.Add($"--eos-threshold {eosThreshold.Value}");
+            if (framesAfterEos.HasValue) parts.Add($"--frames-after-eos {framesAfterEos.Value}");
+            if (!string.IsNullOrWhiteSpace(device)) parts.Add($"--device {device}");
+
+            return parts.Count > 0 ? " " + string.Join(" ", parts) : "";
+        }
+
+        public async Task UploadVoice(string name, ulong userId, TextChannel textChannel, string attachmentUrl, string fileName,
+            bool truncate = false, bool quiet = false, string config = null,
+            int? lsdDecodeSteps = null, float? temperature = null, float? noiseClamp = null,
+            float? eosThreshold = null, int? framesAfterEos = null, string device = null)
         {
             if (!_enablePocketTTS)
             {
@@ -882,7 +915,9 @@ namespace DiscordBotTTS
 
                     try
                     {
-                        var fullCmd = BuildPocketTTSCommand("export-voice", $"\"{tempInput}\" \"{outputPath}\"");
+                        var exportVoiceFlags = BuildExportVoiceArgs(truncate, quiet, config,
+                            lsdDecodeSteps, temperature, noiseClamp, eosThreshold, framesAfterEos, device);
+                        var fullCmd = BuildPocketTTSCommand("export-voice", $"\"{tempInput}\" \"{outputPath}\"{exportVoiceFlags}");
                         // Parse the command
                         var cmdParts = fullCmd.Split(' ', 2);
 
@@ -1902,7 +1937,9 @@ namespace DiscordBotTTS
                     "`!tts changerate <-10 to 10>` - Change speech rate (10 is fastest)\n" +
                     "`!tts changeserver` - Change server\n" +
                     "`!tts voices` - List all available voices\n" +
-                    "`!tts uploadvoice <name>` - Upload a custom PocketTTS voice (attach .wav/.mp3/.safetensors)\n" +
+                    "`!tts uploadvoice <name> [options]` - Upload a custom PocketTTS voice (attach .wav/.mp3/.safetensors)\n" +
+                    "  Options: `--truncate` `--quiet` `--config <val>` `--lsd-decode-steps <n>` `--temperature <f>`\n" +
+                    "           `--noise-clamp <f>` `--eos-threshold <f>` `--frames-after-eos <n>` `--device <dev>`\n" +
                     "`!tts renamevoice <old> <new>` - Rename a custom PocketTTS voice\n" +
                     "`!tts deletevoice <name>` - Delete a custom PocketTTS voice\n" +
                     "`!tts customvoices` - List custom PocketTTS voices\n" +

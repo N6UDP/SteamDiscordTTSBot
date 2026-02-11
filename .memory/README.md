@@ -143,7 +143,7 @@ LeaveChannel():
 | `!tts changeserver` | `/changeserver` | Change server/guild binding |
 | `!tts voices` | `/voices` | List available voices |
 | `!tts say <message>` | `/say` | Speak a message via TTS (Discord-native input) |
-| `!tts uploadvoice <name>` | `/uploadvoice` | Upload a custom PocketTTS voice (.wav attachment) |
+| `!tts uploadvoice <name> [opts]` | `/uploadvoice` | Upload a custom PocketTTS voice (.wav attachment). Optional: `--truncate` `--quiet` `--config` `--lsd-decode-steps` `--temperature` `--noise-clamp` `--eos-threshold` `--frames-after-eos` `--device` |
 | `!tts renamevoice <old> <new>` | `/renamevoice` | Rename a custom PocketTTS voice |
 | `!tts deletevoice <name>` | `/deletevoice` | Delete a custom PocketTTS voice |
 | `!tts customvoices` | `/customvoices` | List all custom PocketTTS voices |
