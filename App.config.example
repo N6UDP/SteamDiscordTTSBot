@@ -59,6 +59,9 @@
         <add key="PocketTTS_RetryInterval" value="3" />
         <add key="PocketTTS_RequestTimeout" value="60" />
         
+        <!-- Device for PocketTTS model inference (cpu, cuda) -->
+        <add key="PocketTTS_Device" value="cpu" />
+        
         <!-- When true, pass local file paths directly as voice_url to the server instead of
              uploading via voice_wav. Requires the N6UDP/pocket-tts fork with - -local-paths flag.
              Only useful when the bot and PocketTTS server share the same filesystem. -->

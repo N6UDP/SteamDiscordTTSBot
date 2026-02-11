@@ -483,6 +483,8 @@ namespace DiscordBotTTS
                     var defaultVoice = ConfigurationManager.AppSettings.Get("PocketTTS_DefaultVoice") ?? "alba";
                     var hfToken = ConfigurationManager.AppSettings.Get("HuggingFace_Token") ?? "";
                     var localPathsFlag = _pocketLocalPaths ? " --local-paths" : "";
+                    var device = ConfigurationManager.AppSettings.Get("PocketTTS_Device") ?? "";
+                    var deviceFlag = !string.IsNullOrWhiteSpace(device) ? $" --device {device}" : "";
 
                     string fileName;
                     string arguments;
@@ -490,12 +492,12 @@ namespace DiscordBotTTS
                     if (executable.Equals("uvx", StringComparison.OrdinalIgnoreCase))
                     {
                         fileName = uvxPath;
-                        arguments = $"--with soundfile --from {gitUrl} pocket-tts serve --host {host} --port {port} --voice {defaultVoice}{localPathsFlag}";
+                        arguments = $"--with soundfile --from {gitUrl} pocket-tts serve --host {host} --port {port} --voice {defaultVoice}{localPathsFlag}{deviceFlag}";
                     }
                     else if (executable.Equals("pocket-tts", StringComparison.OrdinalIgnoreCase))
                     {
                         fileName = pocketTtsPath;
-                        arguments = $"serve --host {host} --port {port} --voice {defaultVoice}{localPathsFlag}";
+                        arguments = $"serve --host {host} --port {port} --voice {defaultVoice}{localPathsFlag}{deviceFlag}";
                     }
                     else
                     {
@@ -503,7 +505,7 @@ namespace DiscordBotTTS
                         var parts = executable.Split(' ', 2);
                         fileName = parts[0];
                         var prefix = parts.Length > 1 ? parts[1] + " " : "";
-                        arguments = $"{prefix}serve --host {host} --port {port} --voice {defaultVoice}{localPathsFlag}";
+                        arguments = $"{prefix}serve --host {host} --port {port} --voice {defaultVoice}{localPathsFlag}{deviceFlag}";
                     }
 
                     Log($"Starting PocketTTS server: {fileName} {arguments}");
@@ -819,34 +821,28 @@ namespace DiscordBotTTS
         /// </summary>
         private static string BuildExportVoiceArgs(
             bool truncate = false,
-            bool quiet = false,
-            string config = null,
             int? lsdDecodeSteps = null,
             float? temperature = null,
             float? noiseClamp = null,
             float? eosThreshold = null,
-            int? framesAfterEos = null,
-            string device = null)
+            int? framesAfterEos = null)
         {
             var parts = new List<string>();
 
             if (truncate) parts.Add("--truncate");
-            if (quiet) parts.Add("--quiet");
-            if (!string.IsNullOrWhiteSpace(config)) parts.Add($"--config {config}");
             if (lsdDecodeSteps.HasValue) parts.Add($"--lsd-decode-steps {lsdDecodeSteps.Value}");
             if (temperature.HasValue) parts.Add($"--temperature {temperature.Value}");
             if (noiseClamp.HasValue) parts.Add($"--noise-clamp {noiseClamp.Value}");
             if (eosThreshold.HasValue) parts.Add($"--eos-threshold {eosThreshold.Value}");
             if (framesAfterEos.HasValue) parts.Add($"--frames-after-eos {framesAfterEos.Value}");
-            if (!string.IsNullOrWhiteSpace(device)) parts.Add($"--device {device}");
 
             return parts.Count > 0 ? " " + string.Join(" ", parts) : "";
         }
 
         public async Task UploadVoice(string name, ulong userId, TextChannel textChannel, string attachmentUrl, string fileName,
-            bool truncate = false, bool quiet = false, string config = null,
+            bool truncate = false,
             int? lsdDecodeSteps = null, float? temperature = null, float? noiseClamp = null,
-            float? eosThreshold = null, int? framesAfterEos = null, string device = null)
+            float? eosThreshold = null, int? framesAfterEos = null)
         {
             if (!_enablePocketTTS)
             {
@@ -915,8 +911,10 @@ namespace DiscordBotTTS
 
                     try
                     {
-                        var exportVoiceFlags = BuildExportVoiceArgs(truncate, quiet, config,
-                            lsdDecodeSteps, temperature, noiseClamp, eosThreshold, framesAfterEos, device);
+                        var exportVoiceFlags = BuildExportVoiceArgs(truncate,
+                            lsdDecodeSteps, temperature, noiseClamp, eosThreshold, framesAfterEos);
+                        var device = ConfigurationManager.AppSettings.Get("PocketTTS_Device") ?? "";
+                        if (!string.IsNullOrWhiteSpace(device)) exportVoiceFlags += $" --device {device}";
                         var fullCmd = BuildPocketTTSCommand("export-voice", $"\"{tempInput}\" \"{outputPath}\"{exportVoiceFlags}");
                         // Parse the command
                         var cmdParts = fullCmd.Split(' ', 2);
@@ -1938,8 +1936,8 @@ namespace DiscordBotTTS
                     "`!tts changeserver` - Change server\n" +
                     "`!tts voices` - List all available voices\n" +
                     "`!tts uploadvoice <name> [options]` - Upload a custom PocketTTS voice (attach .wav/.mp3/.safetensors)\n" +
-                    "  Options: `--truncate` `--quiet` `--config <val>` `--lsd-decode-steps <n>` `--temperature <f>`\n" +
-                    "           `--noise-clamp <f>` `--eos-threshold <f>` `--frames-after-eos <n>` `--device <dev>`\n" +
+                    "  Options: `--truncate` `--lsd-decode-steps <n>` `--temperature <f>`\n" +
+                    "           `--noise-clamp <f>` `--eos-threshold <f>` `--frames-after-eos <n>`\n" +
                     "`!tts renamevoice <old> <new>` - Rename a custom PocketTTS voice\n" +
                     "`!tts deletevoice <name>` - Delete a custom PocketTTS voice\n" +
                     "`!tts customvoices` - List custom PocketTTS voices\n" +

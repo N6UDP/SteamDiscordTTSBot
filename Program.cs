@@ -150,14 +150,11 @@ namespace DiscordBotTTS
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "name", "Name for the custom voice") { Required = true },
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.Attachment, "file", "A .wav voice sample file") { Required = true },
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.Boolean, "truncate", "Truncate long audio") { Required = false },
-                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.Boolean, "quiet", "Disable logging output") { Required = false },
-                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "config", "Model config path or signature") { Required = false },
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.Integer, "lsd_decode_steps", "Number of generation steps") { Required = false },
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "temperature", "Temperature for generation") { Required = false },
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "noise_clamp", "Noise clamp value") { Required = false },
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "eos_threshold", "EOS threshold") { Required = false },
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.Integer, "frames_after_eos", "Frames to generate after EOS") { Required = false },
-                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "device", "Device to use (e.g. cpu)") { Required = false },
                 })},
                 {"renamevoice", ("Rename a custom PocketTTS voice", new List<ApplicationCommandOptionProperties>
                 {
@@ -339,12 +336,6 @@ namespace DiscordBotTTS
                             var truncateOpt = command.Data.Options?.FirstOrDefault(o => o.Name == "truncate")?.Value;
                             if (truncateOpt != null && Convert.ToBoolean(truncateOpt)) uploadArgs.Add("--truncate");
 
-                            var quietOpt = command.Data.Options?.FirstOrDefault(o => o.Name == "quiet")?.Value;
-                            if (quietOpt != null && Convert.ToBoolean(quietOpt)) uploadArgs.Add("--quiet");
-
-                            var configOpt = command.Data.Options?.FirstOrDefault(o => o.Name == "config")?.Value?.ToString();
-                            if (configOpt != null) { uploadArgs.Add("--config"); uploadArgs.Add(configOpt); }
-
                             var lsdOpt = command.Data.Options?.FirstOrDefault(o => o.Name == "lsd_decode_steps")?.Value;
                             if (lsdOpt != null) { uploadArgs.Add("--lsd-decode-steps"); uploadArgs.Add(Convert.ToInt32(lsdOpt).ToString()); }
 
@@ -359,9 +350,6 @@ namespace DiscordBotTTS
 
                             var faeOpt = command.Data.Options?.FirstOrDefault(o => o.Name == "frames_after_eos")?.Value;
                             if (faeOpt != null) { uploadArgs.Add("--frames-after-eos"); uploadArgs.Add(Convert.ToInt32(faeOpt).ToString()); }
-
-                            var deviceOpt = command.Data.Options?.FirstOrDefault(o => o.Name == "device")?.Value?.ToString();
-                            if (deviceOpt != null) { uploadArgs.Add("--device"); uploadArgs.Add(deviceOpt); }
 
                             await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username, uploadArgs.ToArray(),
                                 attachmentUrl: uploadUrl, attachmentFileName: uploadFileName);

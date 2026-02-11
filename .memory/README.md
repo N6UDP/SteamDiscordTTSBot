@@ -143,7 +143,7 @@ LeaveChannel():
 | `!tts changeserver` | `/changeserver` | Change server/guild binding |
 | `!tts voices` | `/voices` | List available voices |
 | `!tts say <message>` | `/say` | Speak a message via TTS (Discord-native input) |
-| `!tts uploadvoice <name> [opts]` | `/uploadvoice` | Upload a custom PocketTTS voice (.wav attachment). Optional: `--truncate` `--quiet` `--config` `--lsd-decode-steps` `--temperature` `--noise-clamp` `--eos-threshold` `--frames-after-eos` `--device` |
+| `!tts uploadvoice <name> [opts]` | `/uploadvoice` | Upload a custom PocketTTS voice (.wav attachment). Optional: `--truncate` `--lsd-decode-steps` `--temperature` `--noise-clamp` `--eos-threshold` `--frames-after-eos` |
 | `!tts renamevoice <old> <new>` | `/renamevoice` | Rename a custom PocketTTS voice |
 | `!tts deletevoice <name>` | `/deletevoice` | Delete a custom PocketTTS voice |
 | `!tts customvoices` | `/customvoices` | List all custom PocketTTS voices |
@@ -194,6 +194,7 @@ LeaveChannel():
 | `PocketTTS_StartupTimeout` | Server startup timeout in seconds (default: 120) |
 | `PocketTTS_RetryInterval` | Retry interval in seconds for server readiness (default: 2) |
 | `PocketTTS_RequestTimeout` | HTTP request timeout in seconds (default: 60) |
+| `PocketTTS_Device` | Device for model inference: cpu, cuda (default: cpu). Applied to both serve and export-voice |
 | `PocketTTS_VoiceDirectory` | Directory for .safetensors voice models |
 | `PocketTTS_VoiceUploadAllowlist` | Comma-separated Discord user IDs allowed to upload voices (empty = all) |
 | `PocketTTS_MaxUploadSizeMB` | Max upload size for voice files in MB (default: 25) |

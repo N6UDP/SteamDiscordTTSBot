@@ -399,15 +399,15 @@ namespace DiscordBotTTS
 
         private async Task HandleUploadVoiceCommandAsync(string[] args, TextChannel textChannel, ulong userId, string attachmentUrl, string attachmentFileName)
         {
-            // Usage: !tts uploadvoice <name> [--truncate] [--quiet] [--config <val>] [--lsd-decode-steps <n>]
-            //        [--temperature <f>] [--noise-clamp <f>] [--eos-threshold <f>] [--frames-after-eos <n>] [--device <dev>]
+            // Usage: !tts uploadvoice <name> [--truncate] [--lsd-decode-steps <n>]
+            //        [--temperature <f>] [--noise-clamp <f>] [--eos-threshold <f>] [--frames-after-eos <n>]
             if (args == null || args.Length < 3)
             {
                 await textChannel.SendMessageAsync(new MessageProperties
                 {
                     Content = "Usage: `!tts uploadvoice <name>` (attach a .wav/.mp3/.safetensors file)\n" +
-                              "Optional flags: `--truncate` `--quiet` `--config <val>` `--lsd-decode-steps <n>` " +
-                              "`--temperature <f>` `--noise-clamp <f>` `--eos-threshold <f>` `--frames-after-eos <n>` `--device <dev>`"
+                              "Optional flags: `--truncate` `--lsd-decode-steps <n>` " +
+                              "`--temperature <f>` `--noise-clamp <f>` `--eos-threshold <f>` `--frames-after-eos <n>`"
                 });
                 return;
             }
@@ -416,14 +416,11 @@ namespace DiscordBotTTS
 
             // Parse optional flags from remaining args (index 3+)
             bool truncate = false;
-            bool quiet = false;
-            string config = null;
             int? lsdDecodeSteps = null;
             float? temperature = null;
             float? noiseClamp = null;
             float? eosThreshold = null;
             int? framesAfterEos = null;
-            string device = null;
 
             for (int i = 3; i < args.Length; i++)
             {
@@ -433,13 +430,6 @@ namespace DiscordBotTTS
                     case "--truncate":
                     case "-tr":
                         truncate = true;
-                        break;
-                    case "--quiet":
-                    case "-q":
-                        quiet = true;
-                        break;
-                    case "--config":
-                        if (i + 1 < args.Length) config = args[++i];
                         break;
                     case "--lsd-decode-steps":
                         if (i + 1 < args.Length && int.TryParse(args[++i], out var lds)) lsdDecodeSteps = lds;
@@ -456,14 +446,11 @@ namespace DiscordBotTTS
                     case "--frames-after-eos":
                         if (i + 1 < args.Length && int.TryParse(args[++i], out var fae)) framesAfterEos = fae;
                         break;
-                    case "--device":
-                        if (i + 1 < args.Length) device = args[++i];
-                        break;
                 }
             }
 
             await _ttsModule.UploadVoice(voiceName, userId, textChannel, attachmentUrl, attachmentFileName,
-                truncate, quiet, config, lsdDecodeSteps, temperature, noiseClamp, eosThreshold, framesAfterEos, device);
+                truncate, lsdDecodeSteps, temperature, noiseClamp, eosThreshold, framesAfterEos);
         }
 
         private async Task HandleRenameVoiceCommandAsync(string[] args, TextChannel textChannel, ulong userId)
