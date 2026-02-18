@@ -20,6 +20,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="MumbleSharp" Version="2.0.2-seqfix" />
     <PackageReference Include="Netcord" Version="1.0.0-alpha.460" />
     <PackageReference Include="Netcord.Services" Version="1.0.0-alpha.460" />
     <PackageReference Include="SteamKit2" Version="3.4.0" />

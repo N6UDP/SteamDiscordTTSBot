@@ -27,6 +27,7 @@ namespace DiscordBotTTS
                 e.Cancel = true; // Prevent immediate termination
                 TTSModule.CleanupCoquiServer();
                 TTSModule.CleanupPocketTTSServer();
+                MumbleModule.Cleanup();
                 Environment.Exit(0);
             };
             
@@ -35,6 +36,7 @@ namespace DiscordBotTTS
                 Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Application exiting, cleaning up...");
                 TTSModule.CleanupCoquiServer();
                 TTSModule.CleanupPocketTTSServer();
+                MumbleModule.Cleanup();
             };
             
             try
@@ -89,6 +91,9 @@ namespace DiscordBotTTS
 
                 // Start PocketTTS server if enabled
                 await TTSModule.InitializePocketTTSServerAsync();
+
+                // Initialize Mumble connection if enabled
+                await MumbleModule.InitializeAsync();
 
                 Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Starting NetCord client...");
                 await _client.StartAsync();
@@ -165,7 +170,16 @@ namespace DiscordBotTTS
                 {
                     new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "name", "Voice name to delete") { Required = true }
                 })},
-                {"customvoices", ("List all custom PocketTTS voices", new List<ApplicationCommandOptionProperties>())}
+                {"customvoices", ("List all custom PocketTTS voices", new List<ApplicationCommandOptionProperties>())},
+                {"destination", ("Change where TTS audio is sent (discord/mumble/both)", new List<ApplicationCommandOptionProperties>
+                {
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "target", "Destination: discord, mumble, or both") { Required = true }
+                })},
+                {"mumblestatus", ("Show Mumble connection status", new List<ApplicationCommandOptionProperties>())},
+                {"mumblejoin", ("Move the bot to a Mumble channel", new List<ApplicationCommandOptionProperties>
+                {
+                    new ApplicationCommandOptionProperties(ApplicationCommandOptionType.String, "channel", "Mumble channel name to join") { Required = true }
+                })}
             };
             
             List<SlashCommandProperties> builtCommands = new List<SlashCommandProperties>();
@@ -382,6 +396,33 @@ namespace DiscordBotTTS
                         else
                         {
                             await textChannel.SendMessageAsync(new MessageProperties { Content = "Voice name is required." });
+                        }
+                        break;
+                    case "destination":
+                        var destTarget = command.Data.Options?.FirstOrDefault(o => o.Name == "target")?.Value?.ToString();
+                        if (destTarget != null)
+                        {
+                            string[] args = { "tts", "destination", destTarget };
+                            await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username, args);
+                        }
+                        else
+                        {
+                            await textChannel.SendMessageAsync(new MessageProperties { Content = "Destination is required (discord, mumble, or both)." });
+                        }
+                        break;
+                    case "mumblestatus":
+                        await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username);
+                        break;
+                    case "mumblejoin":
+                        var mumbleChannel = command.Data.Options?.FirstOrDefault(o => o.Name == "channel")?.Value?.ToString();
+                        if (mumbleChannel != null)
+                        {
+                            string[] args = { "tts", "mumblejoin", mumbleChannel };
+                            await _ch.HandleTTSCommandAsync(commandName, textChannel, guildId, userId, username, args);
+                        }
+                        else
+                        {
+                            await textChannel.SendMessageAsync(new MessageProperties { Content = "Mumble channel name is required." });
                         }
                         break;
                     default:

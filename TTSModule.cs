@@ -693,7 +693,11 @@ namespace DiscordBotTTS
             }
         }
 
-        private async Task<(bool success, string tempPath)> CreatePocketTTSFile(string text, string voice)
+        /// <summary>
+        /// Stream PocketTTS audio directly into a MemoryStream via ffmpeg, without a temp file.
+        /// Downloads the WAV from the PocketTTS server and pipes it through ffmpeg stdin → stdout.
+        /// </summary>
+        private async Task<bool> StreamPocketTTSAudio(string text, string voice, MemoryStream destination)
         {
             var host = ConfigurationManager.AppSettings.Get("PocketTTS_ServerHost") ?? "localhost";
             var port = ConfigurationManager.AppSettings.Get("PocketTTS_ServerPort") ?? "8000";
@@ -707,13 +711,10 @@ namespace DiscordBotTTS
             }
             else
             {
-                // Strip prefix and use as-is
                 resolvedVoice = voice.StartsWith("Pocket_", StringComparison.OrdinalIgnoreCase)
                     ? voice.Substring(7)
                     : voice;
             }
-
-            var tempPath = Path.GetTempFileName() + ".wav";
 
             try
             {
@@ -721,21 +722,15 @@ namespace DiscordBotTTS
                 using var formContent = new MultipartFormDataContent();
                 formContent.Add(new StringContent(text), "text");
 
-                // Check if resolvedVoice is a local file path (custom .safetensors or .wav)
-                // When PocketTTS_LocalPaths is true, the server was started with --local-paths
-                // and can accept local file paths directly via voice_url (avoids uploading).
-                // When false (default), local files must be uploaded via voice_wav.
                 if (File.Exists(resolvedVoice))
                 {
                     if (_pocketLocalPaths)
                     {
-                        // Server has --local-paths enabled — pass the absolute path as voice_url
                         var absolutePath = Path.GetFullPath(resolvedVoice);
                         formContent.Add(new StringContent(absolutePath), "voice_url");
                     }
                     else
                     {
-                        // Upload local file as voice_wav — the server will detect format by extension
                         var fileBytes = await File.ReadAllBytesAsync(resolvedVoice);
                         var fileContent = new ByteArrayContent(fileBytes);
                         fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
@@ -746,12 +741,10 @@ namespace DiscordBotTTS
                       || resolvedVoice.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
                       || resolvedVoice.StartsWith("hf://", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Remote URL — pass as voice_url
                     formContent.Add(new StringContent(resolvedVoice), "voice_url");
                 }
                 else
                 {
-                    // Predefined voice name (alba, marius, etc.) — pass as voice_url
                     formContent.Add(new StringContent(resolvedVoice), "voice_url");
                 }
 
@@ -759,25 +752,47 @@ namespace DiscordBotTTS
 
                 var response = await client.PostAsync($"http://{host}:{port}/tts", formContent);
 
-                if (response.IsSuccessStatusCode)
-                {
-                    var audioData = await response.Content.ReadAsByteArrayAsync();
-                    await File.WriteAllBytesAsync(tempPath, audioData);
-                    Log($"PocketTTS generated audio: {tempPath} ({audioData.Length} bytes)");
-                    return (true, tempPath);
-                }
-                else
+                if (!response.IsSuccessStatusCode)
                 {
                     var errorBody = await response.Content.ReadAsStringAsync();
                     Log($"PocketTTS API failed: {response.StatusCode} — {errorBody}", "Error");
-                    return (false, null);
+                    return false;
                 }
+
+                // Pipe the WAV response directly into ffmpeg stdin → PCM stdout, no temp file
+                using var wavStream = await response.Content.ReadAsStreamAsync();
+                using var ffmpeg = Process.Start(new ProcessStartInfo
+                {
+                    FileName = ConfigurationManager.AppSettings.Get("ffmpeg"),
+                    Arguments = "-hide_banner -loglevel panic -i pipe:0 -ac 2 -f s16le -ar 48000 pipe:1",
+                    UseShellExecute = false,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                });
+
+                // Write WAV to ffmpeg stdin and read PCM from stdout concurrently
+                var writeTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await wavStream.CopyToAsync(ffmpeg.StandardInput.BaseStream);
+                    }
+                    finally
+                    {
+                        ffmpeg.StandardInput.Close();
+                    }
+                });
+
+                await ffmpeg.StandardOutput.BaseStream.CopyToAsync(destination);
+                await writeTask;
+
+                Log($"PocketTTS streamed audio: {destination.Length} bytes (no temp file)");
+                return true;
             }
             catch (Exception ex)
             {
-                Log($"PocketTTS request error: {ex.Message}", "Error");
-                if (File.Exists(tempPath)) File.Delete(tempPath);
-                return (false, null);
+                Log($"PocketTTS streaming error: {ex.Message}", "Error");
+                return false;
             }
         }
 
@@ -1487,25 +1502,53 @@ namespace DiscordBotTTS
                 return CreateTTSFileViaExe(cleanmsg, voice, path);
             }
         }
-        private async Task SendAsync(ulong guildId, string msg, string voice = "Microsoft David Desktop", string user = "", int rate = 0, RestClient restClient = null)
+        private async Task SendAsync(ulong guildId, string msg, string voice = "Microsoft David Desktop", string user = "", int rate = 0, RestClient restClient = null, string ttsDestination = "discord")
         {
-            if (!map.TryGetValue(guildId, out var mapData))
-                return;
+            // Determine routing targets
+            bool wantDiscord = ttsDestination == "discord" || ttsDestination == "both";
+            bool wantMumble = (ttsDestination == "mumble" || ttsDestination == "both") && MumbleModule.IsEnabled;
 
-            (var voiceClient, var voiceChannel, var outputStream, var sem) = mapData;
+            // Try to get Discord voice connection (may be null for mumble-only)
+            map.TryGetValue(guildId, out var mapData);
+            VoiceClient voiceClient = null;
+            VoiceGuildChannel voiceChannel = null;
+            Stream outputStream = null;
+            SemaphoreSlim sem = null;
+
+            if (mapData != default)
+            {
+                (voiceClient, voiceChannel, outputStream, sem) = mapData;
+            }
+
+            // If Discord is wanted but not connected, skip Discord routing
+            if (wantDiscord && voiceClient == null)
+            {
+                wantDiscord = false;
+                if (!wantMumble) return; // Nothing to route to
+            }
+
+            // If Mumble is wanted but not connected, skip Mumble routing
+            if (wantMumble && !MumbleModule.IsConnected)
+            {
+                wantMumble = false;
+                if (!wantDiscord) return; // Nothing to route to
+            }
 
             // Shamelessly lifted from https://stackoverflow.com/a/37960256
             var cleanmsg = Regex.Replace(msg, @"(ftp:\/\/|www\.|https?:\/\/){1}[a-zA-Z0-9u00a1-\uffff0-]{2,}\.[a-zA-Z0-9u00a1-\uffff0-]{2,}(\S*)", "URL replaced");
             if (msg != cleanmsg)
             {
-                // So when we modified the message we log that we did so in the discord log.. this could probably be less ugly
                 msg = msg + "; cleaned: " + cleanmsg;
             }
 
-            if (!IdtoChannel.TryGetValue(guildId, out var textChannel))
-                return;
-
-            var textMsg = await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:{voiceChannel?.Name ?? "voice_channel"}:{voice}:{msg}" });
+            // Log to Discord text channel if available
+            IdtoChannel.TryGetValue(guildId, out var textChannel);
+            NetCord.Rest.RestMessage textMsg = null;
+            if (textChannel != null)
+            {
+                var destLabel = ttsDestination == "both" ? "discord+mumble" : ttsDestination;
+                textMsg = await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:{voiceChannel?.Name ?? destLabel}:{voice}:{msg}" });
+            }
 
             using (var _ms = new MemoryStream())
             {
@@ -1514,28 +1557,13 @@ namespace DiscordBotTTS
                     if (!_enablePocketTTS)
                     {
                         Log($"PocketTTS engine disabled — cannot use voice '{voice}'", "Warning");
-                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"PocketTTS engine is disabled. Change your voice with `!tts changevoice <voice>`." });
+                        if (textChannel != null) await textChannel.SendMessageAsync(new MessageProperties { Content = $"PocketTTS engine is disabled. Change your voice with `!tts changevoice <voice>`." });
                         return;
                     }
-                    var (success, pocketPath) = await CreatePocketTTSFile(cleanmsg, voice);
-                    if (!success || pocketPath == null)
+                    if (!await StreamPocketTTSAudio(cleanmsg, voice, _ms))
                     {
-                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"PocketTTS failed to generate audio for: {cleanmsg}" });
+                        if (textChannel != null) await textChannel.SendMessageAsync(new MessageProperties { Content = $"PocketTTS failed to generate audio for: {cleanmsg}" });
                         return;
-                    }
-                    try
-                    {
-                        using (var ffmpeg = CreateStream(pocketPath))
-                        {
-                            using (var output = ffmpeg.StandardOutput.BaseStream)
-                            {
-                                await output.CopyToAsync(_ms);
-                            }
-                        }
-                    }
-                    finally
-                    {
-                        if (File.Exists(pocketPath)) File.Delete(pocketPath);
                     }
                 }
                 else if (voice.StartsWith("CoQui"))
@@ -1543,7 +1571,7 @@ namespace DiscordBotTTS
                     if (!_enableCoquiTTS)
                     {
                         Log($"CoquiTTS engine disabled — cannot use voice '{voice}'", "Warning");
-                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"Coqui TTS engine is disabled. Change your voice with `!tts changevoice <voice>`." });
+                        if (textChannel != null) await textChannel.SendMessageAsync(new MessageProperties { Content = $"Coqui TTS engine is disabled. Change your voice with `!tts changevoice <voice>`." });
                         return;
                     }
                     var (coquitts, coquittspath) = await CreateTTSFile(cleanmsg, voice);
@@ -1568,7 +1596,7 @@ namespace DiscordBotTTS
                     if (!_enableSystemSpeech)
                     {
                         Log($"System.Speech engine disabled — cannot use voice '{voice}'", "Warning");
-                        await textChannel.SendMessageAsync(new MessageProperties { Content = $"System.Speech engine is disabled. Change your voice with `!tts changevoice <voice>`." });
+                        if (textChannel != null) await textChannel.SendMessageAsync(new MessageProperties { Content = $"System.Speech engine is disabled. Change your voice with `!tts changevoice <voice>`." });
                         return;
                     }
                     using (var synth = new SpeechSynthesizer())
@@ -1587,57 +1615,108 @@ namespace DiscordBotTTS
                         synth.SetOutputToNull();
                     }
                 }
-                _ms.Seek(0, SeekOrigin.Begin);
-                sem.Wait();
-                try
+
+                // ── Prepare audio data for routing ──
+                // Snapshot the PCM buffer once; both Discord and Mumble read from it.
+                var pcmBytes = _ms.ToArray();
+
+                // Build tasks for parallel routing
+                var routingTasks = new List<Task>();
+
+                // ── Route audio to Discord ──
+                if (wantDiscord && sem != null)
                 {
-                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Streaming TTS audio to voice channel: {cleanmsg}");
-                    
-                    // Create an Opus encoding stream to convert PCM to Opus format
-                    // NetCord expects Opus-encoded frames, not raw PCM
-                    using (var opusStream = new OpusEncodeStream(outputStream, PcmFormat.Short, VoiceChannels.Stereo, OpusApplication.Audio))
+                    routingTasks.Add(Task.Run(async () =>
                     {
-                        await _ms.CopyToAsync(opusStream);
-                        await opusStream.FlushAsync();
-                    }
-                    
-                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - TTS audio streaming completed successfully");
-                    
-                    // Add checkmark reaction to indicate successful TTS completion
-                    if (restClient != null)
+                        sem.Wait();
+                        try
+                        {
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Streaming TTS audio to Discord voice channel: {cleanmsg}");
+
+                            using (var discordMs = new MemoryStream(pcmBytes))
+                            using (var opusStream = new OpusEncodeStream(outputStream, PcmFormat.Short, VoiceChannels.Stereo, OpusApplication.Audio))
+                            {
+                                await discordMs.CopyToAsync(opusStream);
+                                await opusStream.FlushAsync();
+                            }
+
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Discord TTS audio streaming completed successfully");
+
+                            if (restClient != null && textMsg != null)
+                            {
+                                try
+                                {
+                                    await restClient.AddMessageReactionAsync(textMsg.ChannelId, textMsg.Id, "✅");
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Failed to add reaction: {ex.Message}");
+                                }
+                            }
+
+                            Log($"TTS sent to Discord: {user}:{voiceChannel?.Name}:{voice}:{msg}", "Info");
+                        }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error streaming TTS audio to Discord: {e.Message}");
+                            if (textChannel != null)
+                            {
+                                await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:{voiceChannel?.Name}:{voice}:{msg} FAILED TO SEND (Discord)" });
+                            }
+                            Log($"{user}:{voiceChannel?.Name}:{voice}:{msg} FAILED TO SEND", "Error");
+                            Log(e.ToString(), "Error");
+                            try
+                            {
+                                if (textChannel != null) await textChannel.SendMessageAsync(new MessageProperties { Content = "Leaving Discord voice channel due to failure." });
+                                await LeaveChannel(voiceChannel, textChannel, guildId);
+                            }
+                            catch
+                            {
+                                if (textChannel != null) await textChannel.SendMessageAsync(new MessageProperties { Content = "Failed to leave voice channel." });
+                            }
+                        }
+                        finally
+                        {
+                            sem.Release(1);
+                        }
+                    }));
+                }
+
+                // ── Route audio to Mumble ──
+                if (wantMumble && MumbleModule.IsConnected)
+                {
+                    routingTasks.Add(Task.Run(async () =>
                     {
                         try
                         {
-                            await restClient.AddMessageReactionAsync(textMsg.ChannelId, textMsg.Id, "✅");
-                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Added checkmark reaction to TTS message");
+                            var monoPcm = MumbleModule.StereoToMono(pcmBytes);
+                            await MumbleModule.SendPcmAudioAsync(monoPcm);
+
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - TTS audio sent to Mumble successfully");
+                            Log($"TTS sent to Mumble: {user}:{voice}:{msg}", "Info");
+
+                            if (!wantDiscord && restClient != null && textMsg != null)
+                            {
+                                try { await restClient.AddMessageReactionAsync(textMsg.ChannelId, textMsg.Id, "✅"); }
+                                catch { }
+                            }
                         }
-                        catch (Exception ex)
+                        catch (Exception e)
                         {
-                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Failed to add reaction: {ex.Message}");
+                            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error sending TTS audio to Mumble: {e.Message}");
+                            Log($"Mumble audio send failed: {e.Message}", "Error");
+                            if (textChannel != null)
+                            {
+                                await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:{voice}:{msg} FAILED TO SEND (Mumble)" });
+                            }
                         }
-                    }
-                    
-                    Log($"TTS sent to voice channel: {user}:{voiceChannel?.Name}:{voice}:{msg}", "Info");
+                    }));
                 }
-                catch (Exception e)
+
+                // Send to all targets in parallel
+                if (routingTasks.Count > 0)
                 {
-                    Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Error streaming TTS audio: {e.Message}");
-                    await textChannel.SendMessageAsync(new MessageProperties { Content = $"{user}:{voiceChannel?.Name}:{voice}:{msg} FAILED TO SEND" });
-                    Log($"{user}:{voiceChannel?.Name}:{voice}:{msg} FAILED TO SEND", "Error");
-                    Log(e.ToString(), "Error");
-                    try
-                    {
-                        await textChannel.SendMessageAsync(new MessageProperties { Content = "Leaving voice channel due to failure." });
-                        await LeaveChannel(voiceChannel, textChannel, guildId);
-                    }
-                    catch
-                    {
-                        await textChannel.SendMessageAsync(new MessageProperties { Content = "Failed to leave voice channel." });
-                    }
-                }
-                finally
-                {
-                    sem.Release(1);
+                    await Task.WhenAll(routingTasks);
                 }
             }
         }
@@ -1751,6 +1830,12 @@ namespace DiscordBotTTS
             public ulong GuildId { get; set; }
 
             public string Name { get; set; }
+
+            /// <summary>
+            /// Where TTS audio should be sent: "discord", "mumble", or "both".
+            /// Defaults to "discord" for backward compatibility.
+            /// </summary>
+            public string TTSDestination { get; set; } = "discord";
         }
 
         public async Task ChangeServer(ulong userId, ulong guildId, TextChannel channel, string username)
@@ -1941,13 +2026,57 @@ namespace DiscordBotTTS
                     "`!tts renamevoice <old> <new>` - Rename a custom PocketTTS voice\n" +
                     "`!tts deletevoice <name>` - Delete a custom PocketTTS voice\n" +
                     "`!tts customvoices` - List custom PocketTTS voices\n" +
+                    "`!tts destination <discord|mumble|both>` - Change where TTS audio is sent\n" +
+                    "`!tts mumblestatus` - Show Mumble connection status\n" +
                     "`!tts help` - Show this help\n\n" +
                     "**Available Voice Types:**\n" +
                     "• System voices (e.g., Microsoft David Desktop)\n" +
                     "• Coqui TTS voices (prefix `CoQui`, e.g., CoQui_female_1)\n" +
                     "• PocketTTS voices (prefix `Pocket`, e.g., Pocket_alba, Pocket_marius)\n\n" +
+                    "**TTS Destinations:** `discord` (default), `mumble`, or `both`\n\n" +
                     "Slash commands (/) are also supported!"
             });
+        }
+
+        /// <summary>
+        /// Change the user's TTS destination (discord, mumble, or both).
+        /// </summary>
+        public async Task ChangeDestination(string destination, ulong userId, TextChannel textChannel, string username)
+        {
+            destination = destination?.Trim().ToLowerInvariant() ?? "";
+            if (destination != "discord" && destination != "mumble" && destination != "both")
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Invalid destination. Use: `discord`, `mumble`, or `both`." });
+                return;
+            }
+
+            if ((destination == "mumble" || destination == "both") && !MumbleModule.IsEnabled)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Mumble is not enabled in the bot configuration." });
+                return;
+            }
+
+            var userPrefs = userPrefsDict.GetValueOrDefault(userId, null);
+            if (userPrefs == null)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "You are not linked. Use `!tts link <steamid>` first, or use `/say` to speak." });
+                return;
+            }
+
+            userPrefs.TTSDestination = destination;
+            userPrefsDict[userId] = userPrefs;
+
+            Log($"{username} changed TTS destination to: {destination}");
+            await textChannel.SendMessageAsync(new MessageProperties { Content = $"TTS destination changed to **{destination}** for {username}." });
+        }
+
+        /// <summary>
+        /// Show the current Mumble connection status.
+        /// </summary>
+        public async Task MumbleStatus(TextChannel textChannel)
+        {
+            var status = MumbleModule.GetStatusText();
+            await textChannel.SendMessageAsync(new MessageProperties { Content = status });
         }
 
         public async Task SayTTS(string message, ulong userId, ulong guildId, TextChannel textChannel, string username)
@@ -1958,19 +2087,29 @@ namespace DiscordBotTTS
                 return;
             }
 
-            if (!map.ContainsKey(guildId))
+            var userPrefs = userPrefsDict.GetValueOrDefault(userId, null);
+            var destination = userPrefs?.TTSDestination ?? "discord";
+            bool hasDiscord = map.ContainsKey(guildId);
+            bool hasMumble = MumbleModule.IsConnected;
+
+            if (!hasDiscord && !hasMumble)
             {
-                await textChannel.SendMessageAsync(new MessageProperties { Content = "Bot is not connected to a voice channel. Use `!tts join` first." });
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Bot is not connected to any voice channel. Use `!tts join` (Discord) or enable Mumble." });
                 return;
             }
 
-            // Look up user preferences for voice and rate; fall back to defaults
-            var userPrefs = userPrefsDict.GetValueOrDefault(userId, null);
+            // If user wants Discord but bot isn't in voice, and Mumble isn't available either
+            if (destination == "discord" && !hasDiscord)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Bot is not connected to a Discord voice channel. Use `!tts join` first, or change destination with `!tts destination mumble`." });
+                return;
+            }
+
             var voice = userPrefs?.Voice ?? "Microsoft David Desktop";
             var rate = userPrefs?.Rate ?? 0;
 
-            Log($"SayTTS from {username}: voice={voice}, rate={rate}, msg={message}");
-            await SendAsync(guildId, message, voice, username, rate, _restClient);
+            Log($"SayTTS from {username}: voice={voice}, rate={rate}, dest={destination}, msg={message}");
+            await SendAsync(guildId, message, voice, username, rate, _restClient, destination);
         }
 
         public async Task Dequeuer()
@@ -2066,7 +2205,18 @@ namespace DiscordBotTTS
             UserPrefs userPrefs;
             userPrefsDict.TryGetValue(discord, out userPrefs);
             if (userPrefs == null) { return; }
-            if (map.ContainsKey(userPrefs.GuildId))
+
+            var destination = userPrefs.TTSDestination ?? "discord";
+            bool hasDiscord = map.ContainsKey(userPrefs.GuildId);
+            bool hasMumble = MumbleModule.IsConnected;
+
+            // Must have at least one active target that the user wants
+            if (!((destination == "discord" || destination == "both") && hasDiscord) &&
+                !((destination == "mumble" || destination == "both") && hasMumble))
+            {
+                return;
+            }
+
             {
                 string voice = userPrefs.Voice;
                 string msg = message.Msg;
@@ -2077,7 +2227,7 @@ namespace DiscordBotTTS
                     voice = possiblevoice;
                     msg = string.Join(":", (IEnumerable<string>)new ArraySegment<string>(array, 1, array.Length - 1));
                 }
-                await SendAsync(userPrefs.GuildId, msg, voice, userPrefs.Name, userPrefs.Rate, _restClient);
+                await SendAsync(userPrefs.GuildId, msg, voice, userPrefs.Name, userPrefs.Rate, _restClient, destination);
             }
         }
 

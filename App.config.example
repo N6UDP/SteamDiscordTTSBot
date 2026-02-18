@@ -79,5 +79,16 @@
         
         <!-- HuggingFace Token for downloading models and voice cloning access -->
         <add key="HuggingFace_Token" value="" />
+        
+        <!-- Mumble Configuration -->
+        <add key="EnableMumble" value="false" />
+        <add key="Mumble_ServerHost" value="localhost" />
+        <add key="Mumble_ServerPort" value="64738" />
+        <add key="Mumble_Username" value="TTSBot" />
+        <add key="Mumble_Password" value="" />
+        <!-- Channel to auto-join on connect (empty = stay in root) -->
+        <add key="Mumble_DefaultChannel" value="" />
+        <!-- Reconnect interval in seconds when connection drops -->
+        <add key="Mumble_ReconnectInterval" value="10" />
     </appSettings>
 </configuration>

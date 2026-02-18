@@ -18,6 +18,7 @@ This directory contains a shared memory bank system for AI assistants (GitHub Co
 
 ## Key Technologies
 - **Discord Framework**: NetCord (v1.0.0-alpha.460) — gateway, REST, voice
+- **Mumble Framework**: MumbleSharp — Mumble voice protocol client (local source with sequence fix, project reference from `../MumbleSharp/MumbleSharp/MumbleSharp.csproj`)
 - **Steam Integration**: SteamKit2 (v3.4.0) — login, friends, message receiving
 - **TTS Engines**: System.Speech (Windows SAPI) + Coqui TTS (exe or server mode) + PocketTTS (Kyutai Labs, server mode)
 - **Config**: System.Configuration.ConfigurationManager with `App.config` XML
@@ -30,11 +31,12 @@ DiscordBotTTS/
 ├── Program.cs              # Entry point, gateway client, slash command registration & routing
 ├── CommandHandler.cs       # ! prefix message command parsing, routes to TTSModule
 ├── TTSModule.cs            # Core TTS: voice management, speech synthesis, Coqui TTS, PocketTTS, user prefs, Steam dequeue
+├── MumbleModule.cs         # Mumble voice client: auto-connect, channel management, audio transmission, chat commands
 ├── InfoModule.cs           # Simple info/echo commands (!say)
 ├── Steam.cs               # SteamKit2: login, friends list, message receiving → Queue
 ├── App.config             # Configuration (bot token, steam creds, TTS settings) — SECRETS, never commit
 ├── App.config.example     # Template config without secrets
-├── userprefs.json         # Persisted user preferences (voice, rate, Steam ID, guild)
+├── userprefs.json         # Persisted user preferences (voice, rate, Steam ID, guild, TTSDestination)
 ├── pocketvoices.json      # Persisted custom PocketTTS voice mappings (name → file path)
 ├── steamid.json           # Persisted Steam ID → Discord ID mapping
 ├── DiscordBotTTS.csproj   # Project file (.NET 10, x64, self-contained publish)
@@ -69,10 +71,12 @@ Steam Friend sends message
   → Steam.OnFriendMsg() → enqueues to Steam.Queue
   → TTSModule.Dequeuer() (background loop, polls every 100ms)
     → Dequeue() → maps SteamID → DiscordID → UserPrefs → GuildID
-      → SendAsync() → generates audio → streams to voice channel
+      → SendAsync(ttsDestination) → generates audio → routes to Discord and/or Mumble
 ```
 
 ### Voice Connection Lifecycle
+
+#### Discord Voice
 ```
 JoinChannel():
   1. gatewayClient.JoinVoiceChannelAsync(guildId, channelId)
@@ -80,19 +84,39 @@ JoinChannel():
   3. voiceClient.EnterSpeakingStateAsync()
   4. voiceClient.CreateOutputStream()
   5. Store in map[guildId] = (VoiceClient, VoiceGuildChannel, Stream, SemaphoreSlim)
+```
 
-SendAsync():
+#### Mumble Voice
+```
+MumbleModule.InitializeAsync():
+  1. Auto-connect on startup if EnableMumble=true
+  2. MumbleConnection + TTSBotMumbleProtocol (subclass of BasicMumbleProtocol)
+  3. Background process loop (MumbleConnection.Process()) on dedicated thread
+  4. Auto-join configured default channel
+  5. Auto-reconnect on disconnect
+```
+
+### TTS Audio Routing (SendAsync)
+```
+SendAsync(guildId, msg, voice, user, rate, restClient, ttsDestination):
   1. Clean message (strip URLs)
-  2. Log to text channel
-  3. Generate audio (System.Speech or Coqui TTS)
-  4. OpusEncodeStream wraps output stream
-  5. Copy PCM → Opus → voice channel
-  6. Add ✅ reaction on success
+  2. Log to Discord text channel (if available)
+  3. Generate stereo PCM audio (System.Speech, Coqui, or PocketTTS)
+  4. Route based on UserPrefs.TTSDestination:
+     - "discord" → OpusEncodeStream → Discord VoiceClient
+     - "mumble"  → StereoToMono → MumbleModule.SendPcmAudio()
+     - "both"    → both Discord and Mumble
+  5. Add ✅ reaction on success
+```
 
-LeaveChannel():
-  1. UpdateVoiceStateAsync(guildId, null) — disconnect
-  2. Dispose output stream, voice client, semaphore
-  3. Remove from map
+### Mumble Chat Commands
+```
+Mumble text chat messages → TTSBotMumbleProtocol.ChannelMessageReceived()
+  → MumbleModule.HandleMumbleChatCommand()
+    !join <channel>  — move bot to a Mumble channel
+    !channels        — list available channels
+    !status          — show bot status
+    !help            — show help
 ```
 
 ### TTS Engine Routing
@@ -127,14 +151,15 @@ LeaveChannel():
 ✅ **Coqui TTS**: Server mode with speaker discovery and exe fallback  
 ✅ **PocketTTS**: Server mode with predefined + custom voices, upload/rename/delete management  
 ✅ **Engine Switches**: Each TTS engine can be independently enabled/disabled  
+✅ **Mumble Integration**: MumbleSharp-based voice client with auto-connect, chat commands, per-user routing  
 ✅ **Error Handling**: Comprehensive logging, graceful shutdown, voice reconnection  
 ✅ **GHCP/Roo/Cline Support**: Shared instructions and memory bank for AI agents
 
 ## Key Commands
 | Command | Slash | Description |
 |---------|-------|-------------|
-| `!tts join [channel_id]` | `/join` | Join voice channel (auto-detects user's channel) |
-| `!tts leave` | `/leave` | Leave voice channel |
+| `!tts join [channel_id]` | `/join` | Join Discord voice channel (auto-detects user's channel) |
+| `!tts leave` | `/leave` | Leave Discord voice channel |
 | `!tts link <steamid> [voice] [rate]` | `/link` | Link Steam account |
 | `!tts unlink` | `/unlink` | Unlink Steam account |
 | `!tts verify` | `/verify` | Check current link status |
@@ -143,6 +168,9 @@ LeaveChannel():
 | `!tts changeserver` | `/changeserver` | Change server/guild binding |
 | `!tts voices` | `/voices` | List available voices |
 | `!tts say <message>` | `/say` | Speak a message via TTS (Discord-native input) |
+| `!tts destination <target>` | `/destination` | Change TTS routing: `discord`, `mumble`, or `both` |
+| `!tts mumblestatus` | `/mumblestatus` | Show Mumble connection status |
+| `!tts mumblejoin <channel>` | `/mumblejoin` | Move bot to a Mumble channel |
 | `!tts uploadvoice <name> [opts]` | `/uploadvoice` | Upload a custom PocketTTS voice (.wav attachment). Optional: `--truncate` `--lsd-decode-steps` `--temperature` `--noise-clamp` `--eos-threshold` `--frames-after-eos` |
 | `!tts renamevoice <old> <new>` | `/renamevoice` | Rename a custom PocketTTS voice |
 | `!tts deletevoice <name>` | `/deletevoice` | Delete a custom PocketTTS voice |
@@ -200,6 +228,17 @@ LeaveChannel():
 | `PocketTTS_MaxUploadSizeMB` | Max upload size for voice files in MB (default: 25) |
 | `HuggingFace_Token` | HuggingFace API token (for gated models) |
 
+### Mumble Settings
+| Key | Description |
+|-----|-------------|
+| `EnableMumble` | Enable/disable Mumble voice client (default: false) |
+| `Mumble_ServerHost` | Mumble server hostname/IP (default: localhost) |
+| `Mumble_ServerPort` | Mumble server port (default: 64738) |
+| `Mumble_Username` | Bot's username on Mumble server (default: TTSBot) |
+| `Mumble_Password` | Mumble server password (default: empty) |
+| `Mumble_DefaultChannel` | Channel to auto-join on connect (empty = stay in root) |
+| `Mumble_ReconnectInterval` | Seconds between reconnect attempts (default: 10) |
+
 ## Build & Run
 ```powershell
 cd C:\Users\lburton\source\repos\DiscordBotTTS
@@ -220,6 +259,14 @@ dotnet run
 
 ## Recent Changes
 
+- **2026-02-17**: Fixed MumbleSharp audio sequence bug — `sequenceIndex` now advances by the number of 10ms frames per Opus packet (was always incrementing by 1). Also fixed decode-side `_nextSequenceToDecode` calculation. Switched from NuGet package to local project reference for the patched MumbleSharp source.
+- **2026-02-17**: PocketTTS streaming — replaced temp-file workflow with HTTP→ffmpeg pipe (no intermediate file)
+- **2026-02-17**: Parallel Discord+Mumble send — `Task.WhenAll` for simultaneous audio delivery
+- **2026-02-17**: Added Mumble voice support via MumbleSharp — MumbleModule.cs with auto-connect, channel management, chat commands (`!join`, `!channels`, `!status`, `!help`), stereo-to-mono audio conversion, auto-reconnect
+- **2026-02-17**: Per-user TTS routing — `UserPrefs.TTSDestination` (discord/mumble/both), `!tts destination` / `/destination` command
+- **2026-02-17**: `SendAsync` refactored for dual routing — generates audio once, sends to Discord and/or Mumble based on user preference
+- **2026-02-17**: New commands: `/destination`, `/mumblestatus`, `/mumblejoin` (slash + text)
+- **2026-02-17**: Mumble config keys: `EnableMumble`, `Mumble_ServerHost`, `Mumble_ServerPort`, `Mumble_Username`, `Mumble_Password`, `Mumble_DefaultChannel`, `Mumble_ReconnectInterval`
 - **2026-02-07**: Fixed custom voice playback — local files (`.safetensors`, `.wav`) now uploaded via `voice_wav` form field instead of `voice_url` (PocketTTS API rejects local paths)
 - **2026-02-07**: Fixed orphaned PocketTTS/Coqui processes — use `Kill(entireProcessTree: true)` to kill `uvx` and its child Python process; added port-based fallback cleanup via `KillProcessOnPort()`
 - **2025-07-17**: Added PocketTTS (Kyutai Labs) engine — server mode, predefined voices (alba, marius, etc.), custom .wav voice upload/rename/delete, `pocketvoices.json` persistence, engine enable/disable switches, slash command integration
@@ -228,10 +275,6 @@ dotnet run
 - **2025-07-16**: Added `!tts say <message>` / `/say` command for Discord-native TTS input (no Steam needed)
 - **2025-07-16**: Timestamped JSON backups (`{file}.{timestamp}.bak`), empty write guards, snapshot serialization in Saver()
 - **2025-07-16**: Updated from .NET 9 to .NET 10, updated all dependencies
-- **2025-07-16**: Added GitHub Copilot instructions (`.github/copilot-instructions.md`)
-- **2025-07-16**: Updated Roo rules to reference shared instructions
-- **2025-07-16**: Enhanced memory bank with comprehensive architecture documentation
-- **2025-07-16**: Code cleanup — removed unused usings, replaced FQ type references
 - **Previous**: Discord.Net → NetCord migration, Coqui TTS server mode, comprehensive logging
 
 ## Future Enhancements

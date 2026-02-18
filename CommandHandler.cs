@@ -184,6 +184,21 @@ namespace DiscordBotTTS
                         await _ttsModule.ListCustomVoices(textChannel);
                         break;
 
+                    case "destination":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS destination command");
+                        await HandleDestinationCommandAsync(args, textChannel, userId, username);
+                        break;
+
+                    case "mumblestatus":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS mumblestatus command");
+                        await _ttsModule.MumbleStatus(textChannel);
+                        break;
+
+                    case "mumblejoin":
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Processing TTS mumblejoin command");
+                        await HandleMumbleJoinCommandAsync(args, textChannel);
+                        break;
+
                     default:
                         Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Unknown TTS subcommand: {subCommand}");
                         await textChannel.SendMessageAsync(new MessageProperties { Content = $"Unknown TTS command: {subCommand}. Try !tts help" });
@@ -478,6 +493,56 @@ namespace DiscordBotTTS
 
             var voiceName = args[2];
             await _ttsModule.DeleteVoice(voiceName, userId, textChannel);
+        }
+
+        private async Task HandleDestinationCommandAsync(string[] args, TextChannel textChannel, ulong userId, string username)
+        {
+            // Usage: !tts destination <discord|mumble|both>
+            if (args == null || args.Length < 3)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts destination <discord|mumble|both>" });
+                return;
+            }
+
+            var destination = args[2];
+            await _ttsModule.ChangeDestination(destination, userId, textChannel, username);
+        }
+
+        private async Task HandleMumbleJoinCommandAsync(string[] args, TextChannel textChannel)
+        {
+            // Usage: !tts mumblejoin <channel name>
+            if (args == null || args.Length < 3)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Usage: !tts mumblejoin <channel name>" });
+                return;
+            }
+
+            var channelName = string.Join(" ", args.Skip(2));
+
+            if (!MumbleModule.IsEnabled)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Mumble is not enabled in the bot configuration." });
+                return;
+            }
+
+            if (!MumbleModule.IsConnected)
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = "Mumble is not currently connected." });
+                return;
+            }
+
+            if (MumbleModule.JoinChannel(channelName))
+            {
+                await textChannel.SendMessageAsync(new MessageProperties { Content = $"Moved to Mumble channel: {channelName}" });
+            }
+            else
+            {
+                var channels = MumbleModule.GetChannels();
+                await textChannel.SendMessageAsync(new MessageProperties
+                {
+                    Content = $"Mumble channel '{channelName}' not found.\nAvailable: {string.Join(", ", channels)}"
+                });
+            }
         }
     }
 }

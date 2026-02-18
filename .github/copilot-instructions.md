@@ -6,7 +6,7 @@ Always read and reference the shared memory bank at `.memory/README.md` before s
 
 ## Project Overview
 
-**DiscordBotTTS** is a C# (.NET 10) Discord bot that bridges Steam chat messages to Discord voice channels via Text-to-Speech. It uses the **NetCord** library for Discord integration and **SteamKit2** for Steam connectivity.
+**DiscordBotTTS** is a C# (.NET 10) Discord bot that bridges Steam chat messages to Discord and Mumble voice channels via Text-to-Speech. It uses the **NetCord** library for Discord integration, **MumbleSharp** for Mumble integration, and **SteamKit2** for Steam connectivity.
 
 ## Security
 
@@ -21,6 +21,7 @@ Always read and reference the shared memory bank at `.memory/README.md` before s
 | `Program.cs` | Entry point, gateway client setup, slash command registration & routing |
 | `CommandHandler.cs` | `!` prefix message command parsing and routing to TTSModule |
 | `TTSModule.cs` | Core TTS logic: voice channel management, speech synthesis, Coqui TTS integration, PocketTTS integration, user preferences, Steam message dequeuing |
+| `MumbleModule.cs` | Mumble voice client: auto-connect, channel management, audio transmission, text chat commands |
 | `InfoModule.cs` | Simple info/echo commands |
 | `Steam.cs` | SteamKit2 integration: login, friends list, message receiving |
 | `App.config` | All configuration (bot token, Steam creds, TTS engine settings) — **contains secrets, never commit** |
@@ -30,13 +31,15 @@ Always read and reference the shared memory bank at `.memory/README.md` before s
 
 - **Command System**: Dual command system — both `!` prefix text commands and `/` slash commands route through `CommandHandler.HandleTTSCommandAsync()`
 - **Discord-native TTS**: `!tts say <message>` / `/say` lets users speak TTS directly from Discord without needing Steam
-- **Voice Connection**: Uses NetCord's `VoiceClient` with Opus encoding. Connections tracked in a `ConcurrentDictionary<ulong, (VoiceClient, VoiceGuildChannel, Stream, SemaphoreSlim)>` keyed by guild ID
+- **Voice Connection**: Uses NetCord's `VoiceClient` with Opus encoding for Discord. Connections tracked in a `ConcurrentDictionary<ulong, (VoiceClient, VoiceGuildChannel, Stream, SemaphoreSlim)>` keyed by guild ID
+- **Mumble Connection**: Uses MumbleSharp's `MumbleConnection` + `BasicMumbleProtocol`. Auto-connects on startup if `EnableMumble=true`. Supports text chat commands (`!join`, `!channels`, `!status`, `!help`) and audio transmission (stereo PCM → mono conversion → Mumble Opus encoding)
+- **TTS Routing**: Per-user `TTSDestination` in UserPrefs (`discord`, `mumble`, or `both`). `SendAsync()` generates audio once and routes to chosen targets.
 - **TTS Engines**: Three engines supported, each individually toggleable via `EnableSystemSpeech`, `EnableCoquiTTS`, `EnablePocketTTS` config keys:
   - `System.Speech.Synthesis.SpeechSynthesizer` for Windows SAPI voices (no prefix)
   - Coqui TTS in two modes: `exe` (CLI per-request) or `server` (persistent HTTP API) — voice prefix `CoQui`
   - PocketTTS (Kyutai Labs) in server mode via HTTP API — voice prefix `Pocket`
 - **Steam Bridge**: Steam messages are enqueued in `Steam.Queue` and dequeued by `TTSModule.Dequeuer()`, which maps Steam IDs → Discord users → guild voice channels
-- **User Preferences**: Stored in `userprefs.json` (voice, rate, Steam ID, guild) with atomic write + timestamped backup. Empty write guards prevent data loss. Snapshot serialization avoids race conditions.
+- **User Preferences**: Stored in `userprefs.json` (voice, rate, Steam ID, guild, TTSDestination) with atomic write + timestamped backup. Empty write guards prevent data loss. Snapshot serialization avoids race conditions.
 - **Configuration**: Uses `System.Configuration.ConfigurationManager` with `App.config` XML
 
 ### Important Conventions
@@ -53,6 +56,7 @@ Always read and reference the shared memory bank at `.memory/README.md` before s
 
 - **NetCord** (1.0.0-alpha.460) — Discord gateway, REST, voice
 - **NetCord.Services** (1.0.0-alpha.460) — Service framework
+- **MumbleSharp** (local source, project reference) — Mumble voice protocol client (patched with sequence number fix)
 - **SteamKit2** (3.4.0) — Steam network client
 - **System.Speech** (10.0.x) — Windows SAPI TTS
 - **System.Configuration.ConfigurationManager** (10.0.x) — App.config access
