@@ -1282,7 +1282,7 @@ namespace DiscordBotTTS
                 await voiceClient.EnterSpeakingStateAsync(new SpeakingProperties(SpeakingFlags.Microphone));
                 
                 // Create output stream for sending voice
-                var outputStream = voiceClient.CreateOutputStream();
+                var outputStream = voiceClient.CreateVoiceStream();
                 
                 Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Voice connection established successfully");
                 
