@@ -1281,8 +1281,13 @@ namespace DiscordBotTTS
                 // Enter speaking state to be able to send voice
                 await voiceClient.EnterSpeakingStateAsync(new SpeakingProperties(SpeakingFlags.Microphone));
                 
-                // Create output stream for sending voice
-                var outputStream = voiceClient.CreateVoiceStream();
+                // Create output stream for sending voice. Wrap it in the Opus encoder
+                // ONCE here and reuse it for every message — disposing an OpusEncodeStream
+                // cascades and disposes the underlying voice stream, so creating a new one
+                // per message (in a `using`) would kill the shared stream after the first
+                // send and make subsequent sends throw ObjectDisposedException.
+                var voiceStream = voiceClient.CreateVoiceStream();
+                var outputStream = new OpusEncodeStream(voiceStream, PcmFormat.Short, VoiceChannels.Stereo, OpusApplication.Audio);
                 
                 Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Voice connection established successfully");
                 
@@ -1633,11 +1638,13 @@ namespace DiscordBotTTS
                         {
                             Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Streaming TTS audio to Discord voice channel: {cleanmsg}");
 
+                            // Write directly to the shared, persistent Opus encode stream
+                            // (created once in JoinChannel). Flush after each clip but never
+                            // dispose it here — disposal is handled in LeaveChannel.
                             using (var discordMs = new MemoryStream(pcmBytes))
-                            using (var opusStream = new OpusEncodeStream(outputStream, PcmFormat.Short, VoiceChannels.Stereo, OpusApplication.Audio))
                             {
-                                await discordMs.CopyToAsync(opusStream);
-                                await opusStream.FlushAsync();
+                                await discordMs.CopyToAsync(outputStream);
+                                await outputStream.FlushAsync();
                             }
 
                             Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Discord TTS audio streaming completed successfully");
