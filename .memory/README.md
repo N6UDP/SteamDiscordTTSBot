@@ -17,7 +17,7 @@ This directory contains a shared memory bank system for AI assistants (GitHub Co
 **Platform**: Windows (requires System.Speech / SAPI)
 
 ## Key Technologies
-- **Discord Framework**: NetCord (v1.0.0-alpha.460) — gateway, REST, voice
+- **Discord Framework**: NetCord (v1.0.0-beta.8) — gateway, REST, voice
 - **Mumble Framework**: MumbleSharp — Mumble voice protocol client (local source with sequence fix, project reference from `../MumbleSharp/MumbleSharp/MumbleSharp.csproj`)
 - **Steam Integration**: SteamKit2 (v3.4.0) — login, friends, message receiving
 - **TTS Engines**: System.Speech (Windows SAPI) + Coqui TTS (exe or server mode) + PocketTTS (Kyutai Labs, server mode)
@@ -259,6 +259,8 @@ dotnet run
 
 ## Recent Changes
 
+- **2026-06-26**: Updated NetCord/NetCord.Services `1.0.0-alpha.469` → `1.0.0-beta.8` (no code changes required). Left `System.Configuration.ConfigurationManager` / `System.Speech` at `10.0.3` (latest is `11.0.0-preview`, a .NET 11 preview incompatible with the net10 target). SteamKit2 (3.4.0) and MumbleSharp (2.0.2-seqfix) already current.
+- **2026-06-26**: Reworked failed-login backoff. New shared `Backoff.cs` helper (`Backoff.Compute(attempt)`) = capped exponential backoff (base 5s, cap 300s) with ±20% jitter, used by both Steam and Discord. Steam (`Steam.cs`) replaced unbounded linear `Thread.Sleep(60s * errorCount)` with the capped helper, now treats `AccountLogonDenied`/SteamGuard as a permanent (non-retryable) failure that stops the reconnect loop (`permanentFailure` flag), and calls `steamClient.Disconnect()` before retrying to avoid leaking the old connection. Discord (`Program.cs`) wraps the initial `_client.StartAsync()` in a retry loop with the same backoff (transient startup failures no longer kill the bot) and added a `Disconnect` event logger using `DisconnectEventArgs.Reconnect` (false = fatal, e.g. invalid token; NetCord still handles recoverable reconnects internally).
 - **2026-02-17**: Fixed MumbleSharp audio sequence bug — `sequenceIndex` now advances by the number of 10ms frames per Opus packet (was always incrementing by 1). Also fixed decode-side `_nextSequenceToDecode` calculation. Switched from NuGet package to local project reference for the patched MumbleSharp source.
 - **2026-02-17**: PocketTTS streaming — replaced temp-file workflow with HTTP→ffmpeg pipe (no intermediate file)
 - **2026-02-17**: Parallel Discord+Mumble send — `Task.WhenAll` for simultaneous audio delivery

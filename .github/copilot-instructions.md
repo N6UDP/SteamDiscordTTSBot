@@ -54,8 +54,8 @@ Always read and reference the shared memory bank at `.memory/README.md` before s
 
 ### Dependencies
 
-- **NetCord** (1.0.0-alpha.460) — Discord gateway, REST, voice
-- **NetCord.Services** (1.0.0-alpha.460) — Service framework
+- **NetCord** (1.0.0-beta.8) — Discord gateway, REST, voice
+- **NetCord.Services** (1.0.0-beta.8) — Service framework
 - **MumbleSharp** (local source, project reference) — Mumble voice protocol client (patched with sequence number fix)
 - **SteamKit2** (3.4.0) — Steam network client
 - **System.Speech** (10.0.x) — Windows SAPI TTS

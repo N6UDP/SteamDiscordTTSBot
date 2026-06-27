@@ -72,6 +72,18 @@ namespace DiscordBotTTS
                 _client = new GatewayClient(token, new GatewayClientConfiguration { Intents = intents });
                 
                 _client.Ready += Client_Ready;
+
+                // Log gateway disconnects. NetCord auto-reconnects recoverable
+                // disconnects internally (args.Reconnect == true); a false value
+                // means a fatal close (e.g. invalid token) that will NOT reconnect.
+                _client.Disconnect += args =>
+                {
+                    if (args.Reconnect)
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Discord gateway disconnected; NetCord will attempt to reconnect...");
+                    else
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Discord gateway disconnected and will NOT reconnect (likely invalid BotToken or a fatal gateway error). Check your App.config.");
+                    return ValueTask.CompletedTask;
+                };
                 
                 _client.InteractionCreate += async interaction =>
                 {
@@ -95,9 +107,27 @@ namespace DiscordBotTTS
                 // Initialize Mumble connection if enabled
                 await MumbleModule.InitializeAsync();
 
-                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Starting NetCord client...");
-                await _client.StartAsync();
-                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - NetCord client started successfully!");
+                // Retry the initial gateway connection with capped exponential backoff
+                // so a transient network/DNS failure at startup doesn't kill the bot.
+                // (Once connected, NetCord handles steady-state reconnection itself.)
+                int discordAttempt = 0;
+                while (true)
+                {
+                    try
+                    {
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Starting NetCord client...");
+                        await _client.StartAsync();
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - NetCord client started successfully!");
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        discordAttempt++;
+                        var delay = Backoff.Compute(discordAttempt);
+                        Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Failed to connect to Discord (attempt {discordAttempt}): {ex.Message}. Retrying in {delay.TotalSeconds:F0} seconds...");
+                        await Task.Delay(delay);
+                    }
+                }
 
                 // Block this task until the program is closed.
                 await Task.Delay(-1);

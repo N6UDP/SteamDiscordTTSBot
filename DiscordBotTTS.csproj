@@ -21,8 +21,8 @@
 
   <ItemGroup>
     <PackageReference Include="MumbleSharp" Version="2.0.2-seqfix" />
-    <PackageReference Include="Netcord" Version="1.0.0-alpha.469" />
-    <PackageReference Include="Netcord.Services" Version="1.0.0-alpha.469" />
+    <PackageReference Include="Netcord" Version="1.0.0-beta.8" />
+    <PackageReference Include="Netcord.Services" Version="1.0.0-beta.8" />
     <PackageReference Include="SteamKit2" Version="3.4.0" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.3" />
     <PackageReference Include="System.Speech" Version="10.0.3" />

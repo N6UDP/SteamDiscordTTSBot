@@ -30,6 +30,10 @@ namespace DiscordBotTTS
 
         static int errorCount = 0;
 
+        // Set when login fails in a way that retrying cannot fix (e.g. SteamGuard
+        // protection or bad credentials). Stops the reconnect loop entirely.
+        static bool permanentFailure = false;
+
         static string user, pass;
 
         public static ConcurrentQueue<Message> Queue = new ConcurrentQueue<Message>();
@@ -90,11 +94,23 @@ namespace DiscordBotTTS
                         manager.RunWaitCallbacks(TimeSpan.FromSeconds(0.1));
                     }
 
+                    // Make sure the underlying connection is fully torn down before we
+                    // build a new SteamClient on the next iteration (avoids leaking the
+                    // old connection when we bailed out of the loop after a login failure).
+                    try { steamClient.Disconnect(); } catch { }
+
+                    if (permanentFailure)
+                    {
+                        Log("Stopping Steam reconnection due to a non-retryable login failure. Check SteamUser/SteamPass and SteamGuard settings.", "Error");
+                        break;
+                    }
+
                     errorCount++;
 
-                    // Sleep for 60 seconds * errorCount
-                    Log(String.Format("Sleeping for {0} minutes", errorCount));
-                    Thread.Sleep((1000 * 60 * errorCount));
+                    // Capped exponential backoff with jitter instead of unbounded linear growth.
+                    var delay = Backoff.Compute(errorCount);
+                    Log(String.Format("Reconnecting to Steam in {0:F0} seconds (attempt {1})...", delay.TotalSeconds, errorCount));
+                    Thread.Sleep(delay);
                 }
             });
         }
@@ -127,8 +143,19 @@ namespace DiscordBotTTS
                     // then the account we're logging into is SteamGuard protected
                     // see sample 5 for how SteamGuard can be handled
 
-                    Log("Unable to logon to Steam: This account is SteamGuard protected.");
+                    Log("Unable to logon to Steam: This account is SteamGuard protected.", "Error");
 
+                    permanentFailure = true;
+                    isRunning = false;
+                    return;
+                }
+
+                if (callback.Result == EResult.InvalidPassword)
+                {
+                    // Bad credentials won't fix themselves on retry — stop looping.
+                    Log("Unable to logon to Steam: Invalid password. Check SteamUser/SteamPass.", "Error");
+
+                    permanentFailure = true;
                     isRunning = false;
                     return;
                 }
