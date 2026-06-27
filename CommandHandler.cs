@@ -39,6 +39,18 @@ namespace DiscordBotTTS
                 return;
             }
 
+            // If Steam login is waiting for a Steam Guard code in this channel, consume
+            // this message as the code instead of treating it as a chat command.
+            if (SteamGuardBridge.TrySubmitCode(message.ChannelId, message.Content))
+            {
+                try
+                {
+                    await _restClient.SendMessageAsync(message.ChannelId, new MessageProperties { Content = "✅ Steam Guard code received." });
+                }
+                catch { }
+                return;
+            }
+
             // Create a number to track where the prefix ends and the command begins
             int argPos = 0;
             var content = message.Content;

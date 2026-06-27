@@ -4,6 +4,11 @@
         <add key="BotToken" value="DISCORDBOTTOKENHERE" />
         <add key="SteamUser" value="user" />
         <add key="SteamPass" value="pass" />
+        <!-- Discord channel ID where the bot will prompt for a Steam Guard code on first
+             login (or after the stored refresh token expires). Reply in that channel with
+             the emailed code. Leave empty to use the console prompt only. The refresh token
+             is cached in steamauth.json so subsequent restarts skip this prompt. -->
+        <add key="SteamGuard_DiscordChannelId" value="" />
         <!-- This allows old style !tts commands etc -->
         <add key="EnableMessageContent" value="true" />
         <!-- Optional experimental coqui tts support -->

@@ -66,6 +66,12 @@ namespace DiscordBotTTS
 
                 var token = new BotToken(botToken);
                 _restClient = new RestClient(token);
+
+                // Wire up the Steam Guard -> Discord bridge so Steam login can prompt
+                // for a Steam Guard code in Discord when needed.
+                SteamGuardBridge.Rest = _restClient;
+                if (ulong.TryParse(ConfigurationManager.AppSettings.Get("SteamGuard_DiscordChannelId"), out var steamGuardChannelId))
+                    SteamGuardBridge.PromptChannelId = steamGuardChannelId;
                 
                 // Set the RestClient for the slash command TTS module
                 slashtts.SetRestClient(_restClient);
@@ -144,6 +150,9 @@ namespace DiscordBotTTS
             Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Bot is READY!");
             Console.WriteLine($"Logged in as: {eventArgs.User.Username} (ID: {eventArgs.User.Id})");
             Console.WriteLine($"Connected to {_client.Cache.Guilds.Count} guilds");
+
+            // The gateway is up, so the Steam Guard bridge can now deliver prompts.
+            SteamGuardBridge.DiscordReady = true;
             
             foreach (var guild in _client.Cache.Guilds.Values)
             {

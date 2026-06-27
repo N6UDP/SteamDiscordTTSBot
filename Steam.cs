@@ -2,10 +2,13 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Configuration;
+using System.IO;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using SteamKit2;
+using SteamKit2.Authentication;
 
 namespace DiscordBotTTS
 {
@@ -26,13 +29,30 @@ namespace DiscordBotTTS
         static SteamUser steamUser;
         static SteamFriends steamFriends;
 
-        static bool isRunning;
+        static volatile bool isRunning;
 
         static int errorCount = 0;
 
         // Set when login fails in a way that retrying cannot fix (e.g. SteamGuard
         // protection or bad credentials). Stops the reconnect loop entirely.
-        static bool permanentFailure = false;
+        static volatile bool permanentFailure = false;
+
+        // Token-based auth state (the modern Steam login flow). Persisted to
+        // steamauth.json so restarts skip the credential + Steam Guard handshake.
+        const string AuthFilePath = "steamauth.json";
+        static string refreshToken;
+        static string guardData;
+        static string accountName;
+        // True when the current login attempt used a stored refresh token rather than
+        // a fresh credential authentication (controls how a failure is handled).
+        static volatile bool usingStoredToken;
+
+        private sealed class SteamAuthData
+        {
+            public string AccountName { get; set; }
+            public string RefreshToken { get; set; }
+            public string GuardData { get; set; }
+        }
 
         static string user, pass;
 
@@ -43,10 +63,84 @@ namespace DiscordBotTTS
             Console.WriteLine($"{DateTime.Now.ToString("s")}:Steam:{level}: {msg}");
         }
 
+        private static void LoadAuth()
+        {
+            try
+            {
+                if (!File.Exists(AuthFilePath))
+                    return;
+
+                var contents = File.ReadAllText(AuthFilePath);
+                if (string.IsNullOrWhiteSpace(contents) || contents == "{}")
+                    return;
+
+                var data = JsonSerializer.Deserialize<SteamAuthData>(contents);
+                if (data == null)
+                    return;
+
+                accountName = data.AccountName;
+                refreshToken = data.RefreshToken;
+                guardData = data.GuardData;
+
+                if (!string.IsNullOrEmpty(refreshToken))
+                    Log("Loaded stored Steam refresh token; will attempt token login.");
+            }
+            catch (Exception ex)
+            {
+                Log($"Failed to load {AuthFilePath}: {ex.Message}", "Warning");
+            }
+        }
+
+        private static void SaveAuth()
+        {
+            try
+            {
+                var data = new SteamAuthData
+                {
+                    AccountName = accountName,
+                    RefreshToken = refreshToken,
+                    GuardData = guardData,
+                };
+                var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
+
+                // Guard: never overwrite a good token file with an all-empty record.
+                if (string.IsNullOrEmpty(refreshToken) && string.IsNullOrEmpty(guardData) && string.IsNullOrEmpty(accountName))
+                {
+                    Log($"Refusing to write empty auth data to {AuthFilePath}", "Warning");
+                    return;
+                }
+
+                // Atomic write with timestamped backup (same pattern as userprefs.json).
+                File.WriteAllText(AuthFilePath + ".tmp", json);
+                if (File.Exists(AuthFilePath))
+                {
+                    var backupPath = $"{AuthFilePath}.{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.bak";
+                    try { File.Copy(AuthFilePath, backupPath, true); }
+                    catch (Exception ex) { Log($"Failed to back up {AuthFilePath}: {ex.Message}", "Warning"); }
+                }
+                File.Move(AuthFilePath + ".tmp", AuthFilePath, true);
+            }
+            catch (Exception ex)
+            {
+                Log($"Failed to save {AuthFilePath}: {ex.Message}", "Warning");
+            }
+        }
+
+        private static void ClearStoredToken()
+        {
+            // Drop the (expired) refresh token but keep guard data so the next
+            // credential authentication can avoid re-prompting for a Steam Guard code.
+            refreshToken = null;
+            usingStoredToken = false;
+            SaveAuth();
+        }
+
         public static Task RunSteamTask()
         {
             user = ConfigurationManager.AppSettings.Get("SteamUser");
             pass = ConfigurationManager.AppSettings.Get("SteamPass");
+
+            LoadAuth();
 
             return Task.Run(() =>
             {
@@ -115,15 +209,110 @@ namespace DiscordBotTTS
             });
         }
 
-        static void OnConnected(SteamClient.ConnectedCallback callback)
+        static async void OnConnected(SteamClient.ConnectedCallback callback)
         {
-            Log(String.Format("Connected to Steam! Logging in '{0}'...", user));
-
-            steamUser.LogOn(new SteamUser.LogOnDetails
+            // Capture this attempt's client. The credential auth flow below can await a
+            // human (a Discord Steam Guard reply) for minutes; if the CM connection drops
+            // in the meantime the reconnect loop builds a brand new SteamClient. This
+            // token lets a stale, still-awaiting flow detect that it has been superseded
+            // and avoid mutating shared state (isRunning / LogOn) for the newer connection.
+            var thisClient = steamClient;
+            var thisUser = steamUser;
+            try
             {
-                Username = user,
-                Password = pass,
-            });
+                // Fast path: reuse a stored refresh token so we don't re-run the
+                // credential + Steam Guard handshake on every restart.
+                if (!string.IsNullOrEmpty(refreshToken))
+                {
+                    usingStoredToken = true;
+                    Log(String.Format("Connected to Steam! Logging in '{0}' with stored refresh token...", accountName ?? user));
+
+                    thisUser.LogOn(new SteamUser.LogOnDetails
+                    {
+                        Username = accountName ?? user,
+                        AccessToken = refreshToken,
+                        ShouldRememberPassword = true,
+                    });
+                    return;
+                }
+
+                usingStoredToken = false;
+                Log(String.Format("Connected to Steam! Authenticating '{0}'...", user));
+
+                // Modern token-based authentication. Steam deprecated direct
+                // username/password LogOn for non-web clients; we must obtain an
+                // access/refresh token via the authentication service first.
+                var authSession = await steamClient.Authentication.BeginAuthSessionViaCredentialsAsync(new AuthSessionDetails
+                {
+                    Username = user,
+                    Password = pass,
+                    IsPersistentSession = true,
+                    GuardData = guardData,
+                    Authenticator = new DiscordAuthenticator(),
+                });
+
+                var pollResponse = await authSession.PollingWaitForResultAsync();
+
+                // If a newer connection attempt superseded us while we were waiting,
+                // abandon this stale flow without touching shared state.
+                if (!ReferenceEquals(steamClient, thisClient))
+                {
+                    Log("Discarding stale Steam authentication result from a superseded connection.", "Warning");
+                    return;
+                }
+
+                // Steam may hand back fresh guard data (a JWT, like the old sentry file)
+                // we can reuse to avoid prompting for a code next time.
+                if (!string.IsNullOrEmpty(pollResponse.NewGuardData))
+                    guardData = pollResponse.NewGuardData;
+
+                accountName = pollResponse.AccountName;
+                refreshToken = pollResponse.RefreshToken;
+                SaveAuth();
+
+                // Re-check immediately before logging on in case the connection was
+                // replaced during SaveAuth's file I/O.
+                if (!ReferenceEquals(steamClient, thisClient))
+                {
+                    Log("Connection superseded before logon; discarding stale authentication.", "Warning");
+                    return;
+                }
+
+                Log("Authentication succeeded; logging on...");
+                thisUser.LogOn(new SteamUser.LogOnDetails
+                {
+                    Username = pollResponse.AccountName,
+                    AccessToken = pollResponse.RefreshToken,
+                    ShouldRememberPassword = true,
+                });
+            }
+            catch (AuthenticationException aex)
+            {
+                if (!ReferenceEquals(steamClient, thisClient)) return; // superseded; don't disturb the newer connection
+                // Credentials/handshake rejected by Steam.
+                if (aex.Result == EResult.InvalidPassword)
+                {
+                    Log("Steam authentication failed: invalid credentials. Check SteamUser/SteamPass.", "Error");
+                    permanentFailure = true;
+                }
+                else
+                {
+                    Log(String.Format("Steam authentication failed: {0} ({1}). Will retry.", aex.Message, aex.Result), "Error");
+                }
+                isRunning = false;
+            }
+            catch (TimeoutException tex)
+            {
+                if (!ReferenceEquals(steamClient, thisClient)) return; // superseded
+                Log(String.Format("Steam authentication timed out: {0}. Will retry.", tex.Message), "Error");
+                isRunning = false;
+            }
+            catch (Exception ex)
+            {
+                if (!ReferenceEquals(steamClient, thisClient)) return; // superseded
+                Log(String.Format("Unexpected error during Steam authentication: {0}. Will retry.", ex.Message), "Error");
+                isRunning = false;
+            }
         }
 
         static void OnDisconnected(SteamClient.DisconnectedCallback callback)
@@ -137,6 +326,17 @@ namespace DiscordBotTTS
         {
             if (callback.Result != EResult.OK)
             {
+                // A stored refresh token was rejected — it has likely expired or been
+                // revoked. Discard it and fall back to a full credential authentication
+                // on the next connect (this is recoverable, not a permanent failure).
+                if (usingStoredToken)
+                {
+                    Log(String.Format("Stored Steam refresh token rejected ({0}); will re-authenticate with credentials.", callback.Result), "Warning");
+                    ClearStoredToken();
+                    isRunning = false;
+                    return;
+                }
+
                 if (callback.Result == EResult.AccountLogonDenied)
                 {
                     // if we recieve AccountLogonDenied or one of it's flavors (AccountLogonDeniedNoMailSent, etc)
